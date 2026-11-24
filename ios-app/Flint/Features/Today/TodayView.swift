@@ -162,16 +162,18 @@ struct TodayView: View {
                     guard canShowStreakSheet else { return }
                     showStreakSheet = true
                 } label: {
-                    if let streakMood {
-                        FlintStreakEmber(mood: streakMood, size: StreakFlamePlacement.badge, animate: false)
-                    } else {
-                        Color.clear.frame(width: StreakFlamePlacement.badge,
-                                          height: StreakFlamePlacement.badge)
+                    Group {
+                        if let streakMood {
+                            FlintStreakEmber(mood: streakMood, size: StreakFlamePlacement.badge, animate: false)
+                        } else {
+                            Color.clear.frame(width: StreakFlamePlacement.badge,
+                                              height: StreakFlamePlacement.badge)
+                        }
                     }
-                        // The flame stays at the approved 24 pt size; the button keeps a
-                        // 44 pt target around it.
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                    // The flame stays at the approved 24 pt size; the button keeps a
+                    // 44 pt target around it.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canShowStreakSheet)
