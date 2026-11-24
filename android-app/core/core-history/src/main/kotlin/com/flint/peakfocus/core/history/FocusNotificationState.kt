@@ -1,7 +1,6 @@
 package com.flint.peakfocus.core.history
 
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -34,6 +33,7 @@ class FocusNotificationState(private val file: File) : FocusCompletionDeliverySt
 
     private suspend fun <T> locked(block: (MutableMap<String, Long>) -> T): T = withContext(Dispatchers.IO) {
         mutex.withLock {
+            AtomicFileReplace.recover(file)
             require(!file.exists() || file.length() <= 2 * 1024 * 1024) { "Notification state exceeds safety bound" }
             val fields = if (file.exists()) FlatJson.decode(file.readText(Charsets.UTF_8)).mapValues { (key, value) ->
                 require(key == "v" || key.startsWith("d:") || key.startsWith("s:"))
@@ -48,16 +48,8 @@ class FocusNotificationState(private val file: File) : FocusCompletionDeliverySt
         val temp = File(file.parentFile, file.name + ".tmp")
         try {
             FileOutputStream(temp).use { it.write(bytes); it.flush(); it.fd.sync() }
-            // minSdk 23: java.nio.file is API 26+, so rename with a copy fallback.
-            if (!temp.renameTo(file)) {
-                FileInputStream(temp).use { input ->
-                    FileOutputStream(file).use { output ->
-                        input.copyTo(output)
-                        output.flush()
-                        output.fd.sync()
-                    }
-                }
-            }
+            // minSdk 23: stage, verify and only then replace the live file.
+            AtomicFileReplace.replace(temp, file)
         } finally {
             temp.delete()
         }

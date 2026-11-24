@@ -156,7 +156,10 @@ fun FlintStreakEmber(
     // Decoding the sheet and cropping 45 frames is bitmap work; keep it off the first
     // composition. The process-wide cache makes later callers immediate.
     val frames by produceState(initialValue = emptyList<ImageBitmap>(), context) {
-        value = withContext(Dispatchers.IO) { StreakAtlasFrames.get(context) }
+        // A stripped/corrupt atlas must blank only the ember, never crash composition.
+        value = withContext(Dispatchers.IO) {
+            runCatching { StreakAtlasFrames.get(context) }.getOrElse { emptyList() }
+        }
     }
     var onScreen by remember { mutableStateOf(true) }
     var elapsedMs by remember { mutableLongStateOf(0L) }

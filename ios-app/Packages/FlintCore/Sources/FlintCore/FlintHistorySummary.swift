@@ -17,6 +17,9 @@ public struct FlintHistorySessionSummary: Identifiable, Equatable, Sendable {
     public let uncertainGaps: [FlintUncertainFocusGap]
     /// A Pomodoro chain's planned round count, from its `started` event (F01). nil for other sessions.
     public let plannedRounds: Int?
+    /// Zone recorded on the accepted terminal event. Streak days are bucketed with it so a
+    /// later device-zone change cannot move a completion to another local day.
+    public let recordedTimeZone: TimeZone?
     /// Rounds proven ended: an observed planned rest `k` proves rounds 1…k, and `completed`
     /// proves all of them. A deadline alone never credits a round.
     public let observedRounds: Int
@@ -32,11 +35,12 @@ public struct FlintHistorySessionSummary: Identifiable, Equatable, Sendable {
     public init(id: String, name: String, startedAt: Date, endedAt: Date, outcome: FlintHistoryOutcome,
                 inferred: Bool, route: String?, intervals: [DateInterval],
                 uncertainGaps: [FlintUncertainFocusGap] = [], plannedRounds: Int? = nil,
-                observedRounds: Int = 0) {
+                recordedTimeZone: TimeZone? = nil, observedRounds: Int = 0) {
         self.id = id; self.name = name; self.startedAt = startedAt; self.endedAt = endedAt
         self.outcome = outcome; self.inferred = inferred; self.route = route; self.intervals = intervals
         self.uncertainGaps = uncertainGaps
         self.plannedRounds = plannedRounds
+        self.recordedTimeZone = recordedTimeZone
         self.observedRounds = observedRounds
     }
 }
@@ -108,7 +112,9 @@ public enum FlintHistoryAggregator {
                 }
             }
         }
-        let completedDays = Set(sessions.filter { $0.outcome == .completed }.map { calendar.startOfDay(for: $0.endedAt) })
+        let completedDays = Set(sessions.filter { $0.outcome == .completed }.compactMap {
+            committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, calendar: calendar)
+        })
         let streak = currentStreak(completedDays: completedDays, today: today, historyStart: historyDay, calendar: calendar)
         let best = max(streak, bestRecordedStreak(completedDays: completedDays, historyStart: historyDay, calendar: calendar))
         return .init(availability: snapshot.availability, sessions: sessions, days: days,
@@ -122,6 +128,18 @@ public enum FlintHistoryAggregator {
     /// Local days use the *current* calendar time zone (`startOfDay(for:)` of each completion
     /// end). Stored event `tz` is provenance only; changing the device time zone rebuckets
     /// history without rewriting event timestamps.
+    /// Map a completion to the local day recorded on its terminal event, expressed as a
+    /// day anchor in the current calendar. The recorded zone fixes the day components, so a
+    /// later device-zone change cannot move the completion to a neighbouring day.
+    private static func committedDay(for date: Date, timeZone: TimeZone?,
+                                     calendar: Calendar) -> Date? {
+        guard let timeZone else { return calendar.startOfDay(for: date) }
+        var source = calendar
+        source.timeZone = timeZone
+        let components = source.dateComponents([.year, .month, .day], from: date)
+        return calendar.date(from: components)
+    }
+
     public static func currentStreak(completedDays: Set<Date>, today: Date, historyStart: Date?,
                                      calendar: Calendar) -> Int {
         guard let historyStart else { return 0 }
@@ -403,10 +421,13 @@ public enum FlintHistoryAggregator {
             } else {
                 observedRounds = min(lastObservedRest, plannedRounds ?? lastObservedRest)
             }
+            let recordedZone = validTerminal
+                ? terminal.flatMap { TimeZone(identifier: $0.tz) }
+                : nil
             return .init(id: id, name: start.name ?? "Focus", startedAt: start.date, endedAt: end,
                          outcome: outcome, inferred: inferred, route: route, intervals: intervals,
                          uncertainGaps: uncertainGaps, plannedRounds: plannedRounds,
-                         observedRounds: observedRounds)
+                         recordedTimeZone: recordedZone, observedRounds: observedRounds)
         }.sorted { $0.startedAt == $1.startedAt ? $0.id < $1.id : $0.startedAt < $1.startedAt }
     }
 

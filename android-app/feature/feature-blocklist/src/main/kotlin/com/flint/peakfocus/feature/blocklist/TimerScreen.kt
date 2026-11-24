@@ -380,8 +380,9 @@ private fun TodayScene(
         // smaller, lower sun when the setup copy is long enough to reach the horizon.
         val tightCopy = (subline?.length ?: 0) > 260
         EmberLandscape(
-            orbCenter = Offset(195f, if (tightCopy) 426f else 470f),
-            orbRadius = if (tightCopy) 50f else 73f,
+            // Long copy: keep the smaller sun below the text block, not under it.
+            orbCenter = Offset(195f, if (tightCopy) 500f else 470f),
+            orbRadius = if (tightCopy) 46f else 73f,
         )
         BoxWithConstraints(Modifier.fillMaxSize().padding(contentPadding)) {
             Column(
@@ -401,24 +402,29 @@ private fun TodayScene(
                         // Derived from the UI clock: a date captured once would go stale
                         // after midnight while Today stays composed.
                         FlintEyebrow(todayLabel(state.nowEpochMs), Modifier.weight(1f))
+                        val badgeModifier = Modifier
+                            .size(48.dp)
+                            .then(
+                                if (historyKnown) {
+                                    Modifier.clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClickLabel = "Show streak details",
+                                        role = Role.Button,
+                                        onClick = { showStreakSheet = true },
+                                    )
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .semantics {
+                                // Unreadable history stays a plain, non-actionable slot so
+                                // TalkBack never announces a button that cannot open.
+                                contentDescription = streakBadgeDescription(historyKnown, streak ?: 0)
+                            }
+                            .testTag("today.streak.ember")
                         Box(
-                            Modifier
-                                .size(48.dp)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    onClickLabel = "Show streak details",
-                                    role = Role.Button,
-                                    onClick = { if (historyKnown) showStreakSheet = true },
-                                )
-                                .semantics {
-                                    // One merged node: the flame itself is silent, so TalkBack
-                                    // hears the count once, with the day singular/zero handled.
-                                    // Unreadable history (null or UNAVAILABLE) stays neutral
-                                    // instead of claiming "no active streak".
-                                    contentDescription = streakBadgeDescription(historyKnown, streak ?: 0)
-                                }
-                                .testTag("today.streak.ember"),
+                            badgeModifier,
                             contentAlignment = Alignment.Center,
                         ) {
                             // Static streak icon on the landing header; the live flame runs in

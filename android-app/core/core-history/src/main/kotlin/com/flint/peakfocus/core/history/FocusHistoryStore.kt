@@ -1,7 +1,6 @@
 package com.flint.peakfocus.core.history
 
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.time.Clock
@@ -145,6 +144,8 @@ class FocusHistoryStore(
 
     private fun readLocked(): HistorySnapshot {
         check(directory.isDirectory || directory.mkdirs()) { "History directory unavailable" }
+        AtomicFileReplace.recover(log)
+        AtomicFileReplace.recover(metadata)
         val meta = readMetadata()
         val createdAt = meta.created
         val clearedAt = meta.cleared
@@ -361,17 +362,9 @@ class FocusHistoryStore(
         val temporary = File(file.parentFile, file.name + ".tmp")
         try {
             FileOutputStream(temporary).use { write(it); it.flush(); it.fd.sync() }
-            // minSdk 23: java.nio.file is API 26+, so use File.renameTo with a
-            // copy fallback instead of Files.move (both replace on POSIX).
-            if (!temporary.renameTo(file)) {
-                FileInputStream(temporary).use { input ->
-                    FileOutputStream(file).use { output ->
-                        input.copyTo(output)
-                        output.flush()
-                        output.fd.sync()
-                    }
-                }
-            }
+            // minSdk 23: java.nio.file is API 26+. Stage and verify the bytes
+            // before replacing, and never truncate the live history file.
+            AtomicFileReplace.replace(temporary, file)
         } finally {
             temporary.delete()
         }

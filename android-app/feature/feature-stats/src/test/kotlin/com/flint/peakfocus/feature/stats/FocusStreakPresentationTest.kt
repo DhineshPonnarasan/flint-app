@@ -156,7 +156,7 @@ class FocusStreakPresentationTest {
 
     private fun activeSummary(streak: Int, completedToday: Boolean): FocusSummary {
         val days = week(0).toMutableList()
-        val completedDays = if (completedToday) streak else streak
+        val completedDays = streak
         for (i in 0 until completedDays) {
             val index = 6 - i - if (completedToday) 0 else 1
             if (index in days.indices) days[index] = days[index].copy(completed = 1, focusedMs = 60_000)

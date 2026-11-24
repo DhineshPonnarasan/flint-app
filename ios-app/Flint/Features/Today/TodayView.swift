@@ -22,10 +22,20 @@ struct TodayView: View {
 
     private var compact: Bool { typeSize.isAccessibilitySize }
 
-    private var streak: Int { history.summary?.streak ?? 0 }
-    private var streakCompletedToday: Bool { (history.summary?.days.last?.completed ?? 0) > 0 }
-    private var streakMood: StreakEmberMood {
-        StreakEmberMood.forStreak(streak, completedToday: streakCompletedToday)
+    /// Unreadable or missing history is not a zero streak; keep it typed optional.
+    private var streak: Int? {
+        guard let summary = history.summary,
+              summary.availability == .value || summary.availability == .degraded else { return nil }
+        return summary.streak
+    }
+    private var streakCompletedToday: Bool {
+        guard let summary = history.summary,
+              summary.availability == .value || summary.availability == .degraded else { return false }
+        return (summary.days.last?.completed ?? 0) > 0
+    }
+    private var streakMood: StreakEmberMood? {
+        guard let streak else { return nil }
+        return StreakEmberMood.forStreak(streak, completedToday: streakCompletedToday)
     }
     private var streakLabel: String {
         StreakPresentationPolicy.badgeLabel(for: history.summary)
@@ -72,7 +82,9 @@ struct TodayView: View {
             StartFocusSheet(vm: vm) { showStart = false }
         }
         .sheet(isPresented: $showStreakSheet) {
-            FocusStreakCelebrationSheet(streak: streak, mood: streakMood) { showStreakSheet = false }
+            if let streak, let streakMood {
+                FocusStreakCelebrationSheet(streak: streak, mood: streakMood) { showStreakSheet = false }
+            }
         }
         .task {
             auth.refresh()
@@ -150,7 +162,12 @@ struct TodayView: View {
                     guard canShowStreakSheet else { return }
                     showStreakSheet = true
                 } label: {
-                    FlintStreakEmber(mood: streakMood, size: StreakFlamePlacement.badge, animate: false)
+                    if let streakMood {
+                        FlintStreakEmber(mood: streakMood, size: StreakFlamePlacement.badge, animate: false)
+                    } else {
+                        Color.clear.frame(width: StreakFlamePlacement.badge,
+                                          height: StreakFlamePlacement.badge)
+                    }
                         // The flame stays at the approved 24 pt size; the button keeps a
                         // 44 pt target around it.
                         .frame(width: 44, height: 44)
