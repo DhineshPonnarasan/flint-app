@@ -99,10 +99,11 @@ final class FlintStreakReviewFixTests: XCTestCase {
         let events = session(day: 27, id: "a")
         let result = summarize(events, now: date(ny, day: 28, hour: 12),
                                calendar: ny, availability: .unavailable)
-        XCTAssertEqual(result.streak, 0)
+        // Salvaged events may still aggregate, but nothing unreadable is ever presented.
         XCTAssertFalse(StreakPresentationPolicy.showsSheet(for: result))
         XCTAssertFalse(StreakPresentationPolicy.showsCard(for: result))
         XCTAssertEqual(StreakPresentationPolicy.badgeLabel(for: result), "Focus streak")
+        XCTAssertNil(result.days.last?.focusedSeconds)
     }
 
     func testEmptyHistoryIsReadableAndShowsAZeroStreak() {
