@@ -1,10 +1,8 @@
 package com.flint.peakfocus.core.history
 
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.Clock
 import java.time.ZoneId
@@ -363,12 +361,16 @@ class FocusHistoryStore(
         val temporary = File(file.parentFile, file.name + ".tmp")
         try {
             FileOutputStream(temporary).use { write(it); it.flush(); it.fd.sync() }
-            val target = file.toPath()
-            val source = temporary.toPath()
-            try {
-                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+            // minSdk 23: java.nio.file is API 26+, so use File.renameTo with a
+            // copy fallback instead of Files.move (both replace on POSIX).
+            if (!temporary.renameTo(file)) {
+                FileInputStream(temporary).use { input ->
+                    FileOutputStream(file).use { output ->
+                        input.copyTo(output)
+                        output.flush()
+                        output.fd.sync()
+                    }
+                }
             }
         } finally {
             temporary.delete()

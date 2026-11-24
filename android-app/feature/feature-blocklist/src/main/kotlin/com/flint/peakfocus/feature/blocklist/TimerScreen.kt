@@ -353,10 +353,12 @@ private fun TodayScene(
     modifier: Modifier,
 ) {
     var showStreakSheet by remember { mutableStateOf(false) }
-    val streak = history?.streak ?: 0
-    val historyKnown = history != null && history.availability != HistoryAvailability.UNAVAILABLE
+    // Fail closed: unreadable history must not be rendered as a zero-day streak.
+    val streak = history
+        ?.takeIf { it.availability != HistoryAvailability.UNAVAILABLE }
+        ?.streak
+    val historyKnown = streak != null
     val completedToday = history?.days?.lastOrNull()?.completed?.let { it > 0 } == true
-    val emberMood = emberMoodFor(streak, completedToday)
 
     Box(modifier.fillMaxSize()) {
         // Horizon scene: the reference composition when the copy is short, and a
@@ -392,21 +394,29 @@ private fun TodayScene(
                                     indication = null,
                                     onClickLabel = "Show streak details",
                                     role = Role.Button,
-                                    onClick = { showStreakSheet = true },
+                                    onClick = { if (historyKnown) showStreakSheet = true },
                                 )
                                 .semantics {
                                     // One merged node: the flame itself is silent, so TalkBack
                                     // hears the count once, with the day singular/zero handled.
                                     // Unreadable history (null or UNAVAILABLE) stays neutral
                                     // instead of claiming "no active streak".
-                                    contentDescription = streakBadgeDescription(historyKnown, streak)
+                                    contentDescription = streakBadgeDescription(historyKnown, streak ?: 0)
                                 }
                                 .testTag("today.streak.ember"),
                             contentAlignment = Alignment.Center,
                         ) {
                             // Static streak icon on the landing header; the live flame runs in
-                            // the streak sheet only.
-                            FlintStreakEmber(mood = emberMood, size = StreakFlamePlacement.Badge, animate = false)
+                            // the streak sheet only. Unknown history leaves a neutral slot.
+                            if (streak != null) {
+                                FlintStreakEmber(
+                                    mood = emberMoodFor(streak, completedToday),
+                                    size = StreakFlamePlacement.Badge,
+                                    animate = false,
+                                )
+                            } else {
+                                Box(Modifier.size(StreakFlamePlacement.Badge))
+                            }
                         }
                         // Brand mark sits at the far right, after the streak flame.
                         FlintMark(Modifier.size(20.dp))
@@ -478,10 +488,10 @@ private fun TodayScene(
                 }
             }
         }
-        if (showStreakSheet) {
+        if (showStreakSheet && streak != null) {
             FocusStreakCelebrationSheet(
                 streak = streak,
-                mood = emberMood,
+                mood = emberMoodFor(streak, completedToday),
                 onDismiss = { showStreakSheet = false },
             )
         }
