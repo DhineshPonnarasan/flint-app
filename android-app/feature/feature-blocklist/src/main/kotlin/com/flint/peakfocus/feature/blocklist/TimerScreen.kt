@@ -137,6 +137,9 @@ fun TimerScreen(
     setupLabel: String? = null,
     onSetup: () -> Unit = {},
     onOpenRules: () -> Unit = {},
+    /** A Quick Settings tile / launcher shortcut request (3.2); opens the sheet, never starts. */
+    quickStart: FocusQuickStart? = null,
+    onQuickStartHandled: (FocusQuickStart) -> Unit = {},
 ) {
     val context = LocalContext.current
     val viewModel: TimerViewModel = viewModel(factory = remember(context) { TimerViewModel.factory(context) })
@@ -176,6 +179,18 @@ fun TimerScreen(
             starting = false
             pickingApps = false
         }
+    }
+
+    // Quick start only ever opens the Start focus sheet (pre-filled from a saved group at
+    // most). A running Timer is shown as is: these entries never stop, shorten or replace it.
+    LaunchedEffect(quickStart?.id) {
+        val request = quickStart ?: return@LaunchedEffect
+        if (state.sessions.isEmpty() && state.exit == null) {
+            pickingApps = false
+            starting = true
+            viewModel.prepareQuickStart(request)
+        }
+        onQuickStartHandled(request)
     }
 
     val running = state.sessions.firstOrNull()
@@ -933,6 +948,14 @@ internal fun StartFocusSheet(
                 color = FlintPalette.Mist,
                 modifier = Modifier.padding(top = 8.dp),
             )
+            state.draftNote?.let { note ->
+                Text(
+                    note,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                    color = FlintPalette.Mist,
+                    modifier = Modifier.padding(top = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
             state.appsError?.let {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(it, color = FlintPalette.Danger, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
