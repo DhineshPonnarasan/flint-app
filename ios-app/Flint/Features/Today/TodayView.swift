@@ -23,15 +23,15 @@ struct TodayView: View {
     private var compact: Bool { typeSize.isAccessibilitySize }
 
     /// Unreadable or missing history is not a zero streak; keep it typed optional.
-    private var streak: Int? {
+    /// `.empty` is readable: a new user has a legitimate zero streak.
+    private var readableSummary: FlintHistorySummary? {
         guard let summary = history.summary,
-              summary.availability == .value || summary.availability == .degraded else { return nil }
-        return summary.streak
+              StreakPresentationPolicy.showsCard(for: summary) else { return nil }
+        return summary
     }
+    private var streak: Int? { readableSummary?.streak }
     private var streakCompletedToday: Bool {
-        guard let summary = history.summary,
-              summary.availability == .value || summary.availability == .degraded else { return false }
-        return (summary.days.last?.completed ?? 0) > 0
+        (readableSummary?.days.last?.completed ?? 0) > 0
     }
     private var streakMood: StreakEmberMood? {
         guard let streak else { return nil }

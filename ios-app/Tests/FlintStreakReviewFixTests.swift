@@ -17,12 +17,13 @@ final class FlintStreakReviewFixTests: XCTestCase {
         return calendar
     }
 
-    private func nyDate(day: Int, hour: Int, minute: Int = 0) -> Date {
-        ny.date(from: DateComponents(year: 2026, month: 10, day: day, hour: hour, minute: minute))!
+    private func date(_ calendar: Calendar, day: Int, hour: Int, minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 10, day: day,
+                                           hour: hour, minute: minute))!
     }
 
-    private func summary(events: [FlintHistoryEvent], now: Date, calendar: Calendar,
-                         availability: FlintHistoryAvailability = .value) -> FlintHistorySummary {
+    private func summarize(_ events: [FlintHistoryEvent], now: Date, calendar: Calendar,
+                           availability: FlintHistoryAvailability = .value) -> FlintHistorySummary {
         FlintHistoryAggregator.summarize(
             .init(events: events,
                   historyStart: calendar.date(byAdding: .day, value: -30, to: now),
@@ -33,48 +34,83 @@ final class FlintStreakReviewFixTests: XCTestCase {
             dayCount: 7)
     }
 
-    private func session(day: Int, session: String) -> [FlintHistoryEvent] {
-        let start = nyDate(day: day, hour: 22, minute: 0)
+    /// A one-hour session completed on `day` in New York, with its zone recorded on both events.
+    private func session(day: Int, hour: Int = 22, id: String) -> [FlintHistoryEvent] {
+        let start = date(ny, day: day, hour: hour)
+        let end = start.addingTimeInterval(3600)
         return [
-            FlintHistoryEvent(type: .started, session: session, at: start,
-                              timeZone: ny.timeZone,
-                              plannedEnd: start.addingTimeInterval(3600)),
-            FlintHistoryEvent(type: .completed, session: session,
-                              at: nyDate(day: day, hour: 23, minute: 30),
-                              timeZone: ny.timeZone),
+            FlintHistoryEvent(type: .started, session: id, at: start, timeZone: ny.timeZone,
+                              plannedEnd: end, tier: "easy", source: "manual", name: "Focus"),
+            FlintHistoryEvent(type: .completed, session: id, at: end, timeZone: ny.timeZone),
         ]
     }
 
-    /// A session committed at 23:30 New York is 28 Oct in Tokyo by wall clock. Bucketing by the
-    /// current zone would credit 28 Oct and extend a stale streak after the device moves zones.
-    func testCommittedDaysSurviveADeviceTimeZoneChange() {
-        let events = session(day: 26, session: "a") + session(day: 27, session: "b")
-        // Today is 29 Oct in Tokyo, so the last committed day (27 Oct NY) is two days back.
-        let now = tokyo.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 12))!
-        let result = summary(events: events, now: now, calendar: tokyo)
-        XCTAssertEqual(result.streak, 0, "A time-zone move must not extend a stale streak")
+    /// Two New York evenings completed days 26 and 27. Moving the device to Tokyo (where it is
+    /// already 29 Oct) must not shift those completions forward and keep a stale streak alive.
+    func testDeviceZoneMoveDoesNotExtendAStaleStreak() {
+        let events = session(day: 26, id: "a") + session(day: 27, id: "b")
+        let result = summarize(events, now: date(tokyo, day: 29, hour: 12), calendar: tokyo)
+        XCTAssertEqual(result.streak, 0)
+        XCTAssertEqual(result.bestRecordedStreak, 2)
     }
 
-    func testSameCommittedDaysStillCountInTheOriginalZone() {
-        let events = session(day: 26, session: "a") + session(day: 27, session: "b")
-        let now = nyDate(day: 28, hour: 12)
-        let result = summary(events: events, now: now, calendar: ny)
-        XCTAssertEqual(result.streak, 2)
+    /// Two consecutive recorded days (27 Oct 22:00 and 28 Oct 01:00 New York) collapse onto one
+    /// Tokyo day if the current zone is used. With recorded zones they stay consecutive.
+    func testRecordedDaysStayConsecutiveAfterAZoneMove() {
+        let events = session(day: 27, hour: 22, id: "c1") + session(day: 28, hour: 1, id: "c2")
+        let now = date(ny, day: 28, hour: 12)
+        let nySummary = summarize(events, now: now, calendar: ny)
+        let tokyoSummary = summarize(events, now: now, calendar: tokyo)
+        XCTAssertEqual(nySummary.streak, 2)
+        XCTAssertEqual(nySummary.bestRecordedStreak, 2)
+        XCTAssertEqual(tokyoSummary.streak, 2)
+        XCTAssertEqual(tokyoSummary.bestRecordedStreak, 2)
+    }
+
+    /// The same recorded days count the same in either device zone.
+    func testSameRecordedDaysCountInEitherZone() {
+        let events = session(day: 27, hour: 9, id: "s1") + session(day: 28, hour: 9, id: "s2")
+        let now = date(ny, day: 28, hour: 12)
+        let nySummary = summarize(events, now: now, calendar: ny)
+        let tokyoSummary = summarize(events, now: now, calendar: tokyo)
+        XCTAssertEqual(nySummary.streak, 2)
+        XCTAssertEqual(tokyoSummary.streak, 2)
+        XCTAssertEqual(nySummary.bestRecordedStreak, 2)
+        XCTAssertEqual(tokyoSummary.bestRecordedStreak, 2)
+    }
+
+    /// A completion made just after midnight in an ahead zone names a recorded day after device
+    /// "today". Clamping keeps the streak and the device-day chart in agreement instead of a
+    /// false zero from skipping today.
+    func testCompletionRecordedAheadOfDeviceZoneCountsToday() {
+        let start = date(tokyo, day: 29, hour: 0)
+        let end = start.addingTimeInterval(3600)
+        let events = [
+            FlintHistoryEvent(type: .started, session: "ahead", at: start, timeZone: tokyo.timeZone,
+                              plannedEnd: end, tier: "easy", source: "manual", name: "Focus"),
+            FlintHistoryEvent(type: .completed, session: "ahead", at: end, timeZone: tokyo.timeZone),
+        ]
+        let result = summarize(events, now: date(ny, day: 28, hour: 12), calendar: ny)
+        XCTAssertEqual(result.streak, 1)
+        XCTAssertEqual(result.days.last?.completed, 1)
     }
 
     func testUnavailableHistoryNeverClaimsAStreak() {
-        let events = session(day: 27, session: "a")
-        let result = summary(events: events, now: nyDate(day: 28, hour: 12),
-                             calendar: ny, availability: .unavailable)
+        let events = session(day: 27, id: "a")
+        let result = summarize(events, now: date(ny, day: 28, hour: 12),
+                               calendar: ny, availability: .unavailable)
+        XCTAssertEqual(result.streak, 0)
         XCTAssertFalse(StreakPresentationPolicy.showsSheet(for: result))
         XCTAssertFalse(StreakPresentationPolicy.showsCard(for: result))
         XCTAssertEqual(StreakPresentationPolicy.badgeLabel(for: result), "Focus streak")
     }
 
-    func testReadableEmptyHistoryIsALegitimateZero() {
-        let result = summary(events: [], now: nyDate(day: 28, hour: 12),
-                             calendar: ny, availability: .empty)
+    func testEmptyHistoryIsReadableAndShowsAZeroStreak() {
+        let result = summarize([], now: date(ny, day: 28, hour: 12),
+                               calendar: ny, availability: .empty)
         XCTAssertEqual(result.streak, 0)
+        XCTAssertTrue(StreakPresentationPolicy.showsCard(for: result))
+        XCTAssertTrue(StreakPresentationPolicy.showsSheet(for: result))
         XCTAssertEqual(StreakPresentationPolicy.badgeLabel(for: result),
                        "No active focus streak")
     }

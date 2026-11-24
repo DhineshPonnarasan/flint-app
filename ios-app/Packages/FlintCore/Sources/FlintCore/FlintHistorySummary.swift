@@ -113,7 +113,7 @@ public enum FlintHistoryAggregator {
             }
         }
         let completedDays = Set(sessions.filter { $0.outcome == .completed }.compactMap {
-            committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, calendar: calendar)
+            committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, today: today, calendar: calendar)
         })
         let streak = currentStreak(completedDays: completedDays, today: today, historyStart: historyDay, calendar: calendar)
         let best = max(streak, bestRecordedStreak(completedDays: completedDays, historyStart: historyDay, calendar: calendar))
@@ -125,19 +125,26 @@ public enum FlintHistoryAggregator {
     /// has no completion. Zero when neither today nor yesterday is completed. Days before
     /// historyStart break the run. Multiple completions on one day count once.
     ///
-    /// Local days use the *current* calendar time zone (`startOfDay(for:)` of each completion
-    /// end). Stored event `tz` is provenance only; changing the device time zone rebuckets
-    /// history without rewriting event timestamps.
+    /// Each completed day is the one recorded on the session's terminal event (`tz`), not the
+    /// device's current zone, so moving the device cannot move a completion to a neighbouring
+    /// day and extend or shorten a streak. The chart's `days` stay device-local; anchors are
+    /// clamped to device `today` so both views of "today" agree.
+    ///
     /// Map a completion to the local day recorded on its terminal event, expressed as a
     /// day anchor in the current calendar. The recorded zone fixes the day components, so a
     /// later device-zone change cannot move the completion to a neighbouring day.
-    private static func committedDay(for date: Date, timeZone: TimeZone?,
+    ///
+    /// A zone ahead of the device can name a day after device `today` for a completion made
+    /// moments ago; clamp it so `days.last.completed` (a device-day chart) and the streak
+    /// agree instead of the streak reporting a false zero. A future day is never credited.
+    private static func committedDay(for date: Date, timeZone: TimeZone?, today: Date,
                                      calendar: Calendar) -> Date? {
         guard let timeZone else { return calendar.startOfDay(for: date) }
         var source = calendar
         source.timeZone = timeZone
         let components = source.dateComponents([.year, .month, .day], from: date)
-        return calendar.date(from: components)
+        guard let day = calendar.date(from: components) else { return nil }
+        return min(day, today)
     }
 
     public static func currentStreak(completedDays: Set<Date>, today: Date, historyStart: Date?,

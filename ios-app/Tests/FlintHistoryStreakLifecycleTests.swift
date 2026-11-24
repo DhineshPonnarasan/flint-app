@@ -223,14 +223,14 @@ final class FlintHistoryStreakLifecycleTests: XCTestCase {
         XCTAssertEqual(result.bestRecordedStreak, 3)
     }
 
-    /// S17 — timezone rebucketing contract (parity with Android FocusStreakLifecycleTest).
+    /// S17 — recorded-zone day bucketing (parity with Android FocusStreakLifecycleTest).
     ///
-    /// Storage: event `at` / session end are epoch milliseconds (absolute instants). The
-    /// stored `tz` field is provenance only; aggregation uses the *current* calendar
-    /// timezone via `startOfDay(for: endedAt)`. Changing the device timezone therefore
-    /// rebuckets historical completions and can raise or lower current and best streak
-    /// without mutating history bytes.
-    func testS17_timezoneChangeRebuckets() {
+    /// Storage: event `at` / session end are epoch milliseconds (absolute instants). Each
+    /// completion is bucketed on the local day recorded in its terminal event `tz`, so moving
+    /// the device cannot move a completion to a neighbouring day and extend or shorten a
+    /// streak without mutating history bytes. The chart's `days` stay device-local; a recorded
+    /// day ahead of device today clamps to today so both views agree.
+    func testS17_timezoneChangeKeepsRecordedDays() {
         var tokyo = Calendar(identifier: .gregorian)
         tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo")!
         let history = ny.date(from: DateComponents(year: 2026, month: 10, day: 1))!
@@ -239,13 +239,13 @@ final class FlintHistoryStreakLifecycleTests: XCTestCase {
             let start = ny.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
             let end = start.addingTimeInterval(3600)
             return [
-                FlintHistoryEvent(type: .started, session: id, at: start, plannedEnd: end,
-                                  tier: "easy", source: "manual", name: "Focus"),
-                FlintHistoryEvent(type: .completed, session: id, at: end),
+                FlintHistoryEvent(type: .started, session: id, at: start, timeZone: ny.timeZone,
+                                  plannedEnd: end, tier: "easy", source: "manual", name: "Focus"),
+                FlintHistoryEvent(type: .completed, session: id, at: end, timeZone: ny.timeZone),
             ]
         }
 
-        // Midday: NY today-completed streak 1; Tokyo sees that completion as yesterday → streak 1.
+        // Midday: NY today-completed; Tokyo sees the device date as tomorrow, so it is yesterday.
         let midday = session(id: "mid", year: 2026, month: 10, day: 28, hour: 10)
         let middayNow = ny.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 12))!
         let middayNy = summarize(midday, now: middayNow, historyStart: history, calendar: ny)
@@ -255,7 +255,7 @@ final class FlintHistoryStreakLifecycleTests: XCTestCase {
         XCTAssertEqual(middayTokyo.streak, 1)
         XCTAssertEqual(middayTokyo.bestRecordedStreak, 1)
 
-        // Collapse: two consecutive NY days land on one Tokyo day → best decreases 2 → 1.
+        // Two consecutive NY days stay consecutive even when Tokyo would merge them into one day.
         let collapse = session(id: "c1", year: 2026, month: 10, day: 27, hour: 22)
             + session(id: "c2", year: 2026, month: 10, day: 28, hour: 1)
         let collapseNow = middayNow
@@ -263,10 +263,10 @@ final class FlintHistoryStreakLifecycleTests: XCTestCase {
         let collapseTokyo = summarize(collapse, now: collapseNow, historyStart: history, calendar: tokyo)
         XCTAssertEqual(collapseNy.streak, 2)
         XCTAssertEqual(collapseNy.bestRecordedStreak, 2)
-        XCTAssertEqual(collapseTokyo.streak, 1) // Tokyo today 10-29; yesterday 10-28 anchors
-        XCTAssertEqual(collapseTokyo.bestRecordedStreak, 1)
+        XCTAssertEqual(collapseTokyo.streak, 2)
+        XCTAssertEqual(collapseTokyo.bestRecordedStreak, 2)
 
-        // Split: two same-NY-day completions land on consecutive Tokyo days → streak/best 1 → 2.
+        // Two completions on one NY day stay one day even when Tokyo would split them in two.
         let split = session(id: "s1", year: 2026, month: 10, day: 28, hour: 1)
             + session(id: "s2", year: 2026, month: 10, day: 28, hour: 20)
         let splitNow = ny.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 21, minute: 30))!
@@ -274,8 +274,8 @@ final class FlintHistoryStreakLifecycleTests: XCTestCase {
         let splitTokyo = summarize(split, now: splitNow, historyStart: history, calendar: tokyo)
         XCTAssertEqual(splitNy.streak, 1)
         XCTAssertEqual(splitNy.bestRecordedStreak, 1)
-        XCTAssertEqual(splitTokyo.streak, 2)
-        XCTAssertEqual(splitTokyo.bestRecordedStreak, 2)
+        XCTAssertEqual(splitTokyo.streak, 1)
+        XCTAssertEqual(splitTokyo.bestRecordedStreak, 1)
     }
 
     func testS18_summaryIsDeterministicForTheSameEvents() {
