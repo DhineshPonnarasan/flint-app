@@ -25,45 +25,54 @@ internal object AtomicFileReplace {
         val staged = sibling(target, ".staged")
         val backup = sibling(target, ".bak")
         staged.delete()
+        // Only a backup this call moved aside may be deleted afterwards. A pre-existing
+        // backup can be the only valid copy after an interrupted recovery.
+        var movedTarget = false
         try {
             copy(temporary, staged)
             check(staged.length() == temporary.length()) { "Staged history write is incomplete" }
-            val hadTarget = target.exists()
-            if (hadTarget && !rename(target, backup)) {
-                throw IOException("Could not move the previous history file aside")
+            if (target.exists()) {
+                if (!rename(target, backup)) {
+                    throw IOException("Could not move the previous history file aside")
+                }
+                movedTarget = true
             }
             if (!rename(staged, target)) {
-                if (hadTarget) rename(backup, target)
+                if (movedTarget) rename(backup, target)
                 throw IOException("Could not promote the staged history file")
             }
-            backup.delete()
+            if (movedTarget) backup.delete()
             temporary.delete()
             return true
         } catch (failure: Exception) {
             staged.delete()
-            if (!target.exists() && backup.exists()) rename(backup, target)
+            if (movedTarget && !target.exists() && backup.exists()) rename(backup, target)
             temporary.delete()
             if (failure is IOException) throw failure
             throw IOException("History replacement failed", failure)
         }
     }
 
-    /** Restore a valid file left behind by an interrupted replacement. */
-    fun recover(target: File) {
+    /**
+     * Restore a valid file left behind by an interrupted replacement.
+     *
+     * @return false when a backup exists but cannot be restored yet. The backup is kept, so
+     * callers must treat the file as unreadable instead of starting from an empty history.
+     */
+    fun recover(target: File): Boolean {
         val staged = sibling(target, ".staged")
         val backup = sibling(target, ".bak")
         val temporary = sibling(target, ".tmp")
         if (!target.exists() && backup.exists()) {
-            if (!rename(backup, target)) {
-                // Keep the backup for a later attempt; never delete the only copy.
-                return
-            }
+            // Never delete the only copy.
+            if (!rename(backup, target)) return false
         }
         if (target.exists()) {
             backup.delete()
             staged.delete()
             temporary.delete()
         }
+        return true
     }
 
     private fun sibling(target: File, suffix: String) = File(target.parentFile, target.name + suffix)

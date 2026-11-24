@@ -107,7 +107,7 @@ class AtomicFileReplaceTest {
         val backup = File(temporaryFolder.root, target.name + ".bak")
         backup.writeText("recovered")
         AtomicFileReplace.rename = { from, to -> from.renameTo(to) }
-        AtomicFileReplace.recover(target)
+        assertTrue(AtomicFileReplace.recover(target))
         restoreSeams()
         assertEquals("recovered", target.readText())
         assertFalse(backup.exists())
@@ -119,11 +119,58 @@ class AtomicFileReplaceTest {
         val backup = File(temporaryFolder.root, target.name + ".bak")
         backup.writeText("recovered")
         AtomicFileReplace.rename = { _, _ -> false }
-        AtomicFileReplace.recover(target)
+        assertFalse(AtomicFileReplace.recover(target))
         restoreSeams()
         assertFalse(target.exists())
         assertTrue(backup.exists())
         assertEquals("recovered", backup.readText())
+    }
+
+    @Test
+    fun failedRestoreKeepsTheBackupAsTheOnlyCopy() {
+        val target = temporaryFolder.newFile("history.json")
+        target.writeText("old-valid")
+        val temp = temporaryFolder.newFile("history.json.tmp")
+        temp.writeText("new-content")
+        val staged = File(target.parentFile, target.name + ".staged")
+        val backup = File(target.parentFile, target.name + ".bak")
+        AtomicFileReplace.rename = { from, to ->
+            when {
+                to == target -> false
+                else -> from.renameTo(to)
+            }
+        }
+        assertThrows(IOException::class.java) {
+            AtomicFileReplace.replace(temp, target)
+        }
+        assertFalse(target.exists())
+        assertTrue(backup.exists())
+        assertEquals("old-valid", backup.readText())
+        // While the filesystem still refuses, recovery reports failure instead of starting empty.
+        assertFalse(AtomicFileReplace.recover(target))
+        restoreSeams()
+        assertTrue(AtomicFileReplace.recover(target))
+        assertEquals("old-valid", target.readText())
+    }
+
+    @Test
+    fun replacementDoesNotDeleteABackupItDidNotCreate() {
+        val target = File(temporaryFolder.root, "history.json")
+        val temp = temporaryFolder.newFile("history.json.tmp")
+        temp.writeText("new-content")
+        val backup = File(temporaryFolder.root, target.name + ".bak")
+        backup.writeText("older-copy")
+        AtomicFileReplace.rename = { from, to ->
+            if (from == temp && to == target) false else from.renameTo(to)
+        }
+        try {
+            assertTrue(AtomicFileReplace.replace(temp, target))
+        } finally {
+            restoreSeams()
+        }
+        assertEquals("new-content", target.readText())
+        assertTrue(backup.exists())
+        assertEquals("older-copy", backup.readText())
     }
 
     @Test
@@ -132,7 +179,7 @@ class AtomicFileReplaceTest {
         target.writeText("current")
         val staged = File(temporaryFolder.root, target.name + ".staged")
         staged.writeText("stale")
-        AtomicFileReplace.recover(target)
+        assertTrue(AtomicFileReplace.recover(target))
         assertEquals("current", target.readText())
         assertFalse(staged.exists())
     }

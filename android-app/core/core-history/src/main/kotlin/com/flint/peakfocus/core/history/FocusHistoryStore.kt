@@ -144,8 +144,9 @@ class FocusHistoryStore(
 
     private fun readLocked(): HistorySnapshot {
         check(directory.isDirectory || directory.mkdirs()) { "History directory unavailable" }
-        AtomicFileReplace.recover(log)
-        AtomicFileReplace.recover(metadata)
+        // A pending backup that cannot be restored is unreadable history, not an empty log.
+        check(AtomicFileReplace.recover(log)) { "History recovery pending" }
+        check(AtomicFileReplace.recover(metadata)) { "Metadata recovery pending" }
         val meta = readMetadata()
         val createdAt = meta.created
         val clearedAt = meta.cleared
