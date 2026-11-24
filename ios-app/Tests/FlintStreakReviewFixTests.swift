@@ -37,8 +37,8 @@ final class FlintStreakReviewFixTests: XCTestCase {
         let start = nyDate(day: day, hour: 22, minute: 0)
         return [
             FlintHistoryEvent(type: .started, session: session, at: start,
-                              plannedEnd: start.addingTimeInterval(3600),
-                              timeZone: ny.timeZone),
+                              timeZone: ny.timeZone,
+                              plannedEnd: start.addingTimeInterval(3600)),
             FlintHistoryEvent(type: .completed, session: session,
                               at: nyDate(day: day, hour: 23, minute: 30),
                               timeZone: ny.timeZone),
