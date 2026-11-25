@@ -29,6 +29,11 @@ data class FocusSession(
      * highest planned rest `k` actually observed. A deadline alone proves no round.
      */
     val pomodoroRoundsCompleted: Int = 0,
+    /**
+     * Zone recorded on the accepted terminal event (`HistoryEvent.tz`). Streak attribution
+     * uses the civil day in this zone; null when a legacy/corrupt terminal names no usable zone.
+     */
+    val terminalZone: ZoneId? = null,
 ) {
     val focusedMs: Long get() = FocusHistoryBounds.lowerBound(listOf(this))
 }
@@ -89,6 +94,7 @@ object FocusHistoryAggregator {
                 cursor = next
             }
         }
+        // Chart counts keep the device-local presentation policy.
         val completed = sessions.filter { it.outcome == SessionOutcome.COMPLETED }.groupingBy { date(it.end, zone) }.eachCount()
         val ended = sessions.filter { it.outcome in setOf(SessionOutcome.ENDED_EARLY, SessionOutcome.SUPERSEDED) }
             .groupingBy { date(it.end, zone) }.eachCount()
@@ -105,8 +111,15 @@ object FocusHistoryAggregator {
             )
         }.toList()
         val today = date(now, zone)
-        val streak = currentStreak(completed.keys, today, startDate)
-        val best = maxOf(streak, bestRecordedStreak(completed.keys, startDate))
+        // Streak attribution uses the civil day recorded on each terminal event, clamped to
+        // device today so the badge and the device-local chart cannot disagree. Legacy sessions
+        // without a usable recorded zone fall back to the device zone.
+        val completedDays = sessions.asSequence()
+            .filter { it.outcome == SessionOutcome.COMPLETED }
+            .map { session -> recordedDay(session, zone).let { if (it > today) today else it } }
+            .toSet()
+        val streak = currentStreak(completedDays, today, startDate)
+        val best = maxOf(streak, bestRecordedStreak(completedDays, startDate))
         return FocusSummary(availability, sessions, days, streak, bestRecordedStreak = best)
     }
 
@@ -115,9 +128,10 @@ object FocusHistoryAggregator {
      * has no completion. Zero when neither today nor yesterday is completed. Days before
      * [historyStart] break the run. Multiple completions on one day count once.
      *
-     * Local days are always derived in the *current* [zone] passed to [summarize]
-     * (`Instant.atZone(zone)` of each completion end). Stored event `tz` is provenance only;
-     * changing the device time zone rebuckets history without rewriting event timestamps.
+     * Completed days are the civil dates recorded on each session's terminal event (`tz`), not
+     * the device's current zone, so changing the device zone cannot move a completion to a
+     * neighbouring day and extend or shorten a streak. The chart's [FocusDay] counts stay
+     * device-local, and recorded days ahead of device today are clamped to today.
      */
     fun currentStreak(completedDays: Set<LocalDate>, today: LocalDate, historyStart: LocalDate): Int {
         var cursor = if (today in completedDays) today else today.minusDays(1)
@@ -352,7 +366,8 @@ object FocusHistoryAggregator {
             FocusSession(id, start.name ?: "Focus", start.at, end, plannedEnd, outcome, inferred,
                 intervals, ordinaryBreaks.takeIf { it > 0 },
                 ordered.count { it.knownType == HistoryEventType.OPEN_INTERCEPTED }.takeIf { it > 0 }, terminal != null,
-                uncertainGaps, plannedRounds, completedRounds)
+                uncertainGaps, plannedRounds, completedRounds,
+                terminal?.takeIf { validTerminal }?.let { zoneOrNull(it.tz) })
         }
     }
 
@@ -385,4 +400,13 @@ object FocusHistoryAggregator {
         }
     }
     private fun date(at: Long, zone: ZoneId): LocalDate = Instant.ofEpochMilli(at).atZone(zone).toLocalDate()
+
+    /** Civil day of a completion in the zone recorded on its terminal event. */
+    private fun recordedDay(session: FocusSession, zone: ZoneId): LocalDate {
+        val recorded = session.terminalZone ?: return date(session.end, zone)
+        return Instant.ofEpochMilli(session.end).atZone(recorded).toLocalDate()
+    }
+
+    /** Legacy or corrupt records may name a zone this device cannot resolve. */
+    private fun zoneOrNull(id: String): ZoneId? = runCatching { ZoneId.of(id) }.getOrNull()
 }

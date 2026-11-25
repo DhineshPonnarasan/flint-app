@@ -225,15 +225,15 @@ class FocusStreakLifecycleTest {
     }
 
     /**
-     * S17 — timezone rebucketing contract.
+     * S17 — recorded-zone day bucketing (parity with iOS `FlintHistoryStreakLifecycleTests`).
      *
-     * Storage: event `at` / session end are epoch milliseconds (absolute instants). The
-     * stored `tz` field is provenance only; aggregation never uses it for day buckets.
-     * Local days are `Instant.atZone(currentZone).toLocalDate()` of the completion end.
-     * Changing the device zone therefore rebuckets historical completions and can raise
-     * or lower both current streak and best recorded streak without mutating history.
+     * Storage: event `at` / session end are epoch milliseconds (absolute instants). Each
+     * completion is bucketed on the civil day recorded in its terminal event `tz`, so moving
+     * the device cannot move a completion to a neighbouring day and extend or shorten a
+     * streak without mutating history bytes. The chart's [FocusDay] counts stay device-local;
+     * a recorded day ahead of device today clamps to today so both views agree.
      */
-    @Test fun S17_timezoneChangeRebuckets() {
+    @Test fun S17_timezoneChangeKeepsRecordedDays() {
         val nyZone = ZoneId.of("America/New_York")
         val tokyoZone = ZoneId.of("Asia/Tokyo")
         val history = LocalDate.of(2026, 10, 1).atStartOfDay(nyZone).toInstant().toEpochMilli()
@@ -262,28 +262,26 @@ class FocusStreakLifecycleTest {
         assertEquals(1, middayTokyo.streak)
         assertEquals(1, middayTokyo.bestRecordedStreak)
 
-        // Collapse: two consecutive NY days land on one Tokyo day → streak/best decrease.
-        // NY 10-27 22:00 EDT → Tokyo 10-28 11:00; NY 10-28 01:00 EDT → Tokyo 10-28 14:00.
+        // Two consecutive NY days stay consecutive even when Tokyo merges them into one day.
         val collapse = session("c1", "2026-10-27T22:00:00") + session("c2", "2026-10-28T01:00:00")
         val collapseNow = LocalDateTime.parse("2026-10-28T12:00:00").atZone(nyZone).toInstant().toEpochMilli()
         val collapseNy = summarize(collapse, now = collapseNow, historyStartMs = history, inZone = nyZone)
         val collapseTokyo = summarize(collapse, now = collapseNow, historyStartMs = history, inZone = tokyoZone)
         assertEquals(2, collapseNy.streak)
         assertEquals(2, collapseNy.bestRecordedStreak)
-        // Tokyo "today" is 10-29; only 10-28 completed → yesterday anchor keeps streak 1.
-        assertEquals(1, collapseTokyo.streak)
-        assertEquals(1, collapseTokyo.bestRecordedStreak)
+        // Tokyo "today" is 10-29; the recorded 10-27/10-28 anchors are still a run of two.
+        assertEquals(2, collapseTokyo.streak)
+        assertEquals(2, collapseTokyo.bestRecordedStreak)
 
-        // Split: two same-NY-day completions land on consecutive Tokyo days → streak/best increase.
-        // NY 10-28 01:00 → Tokyo 10-28 14:00; NY 10-28 20:00 → Tokyo 10-29 09:00.
+        // Two completions on one NY day stay one day even when Tokyo splits them in two.
         val split = session("s1", "2026-10-28T01:00:00") + session("s2", "2026-10-28T20:00:00")
         val splitNow = LocalDateTime.parse("2026-10-28T21:30:00").atZone(nyZone).toInstant().toEpochMilli()
         val splitNy = summarize(split, now = splitNow, historyStartMs = history, inZone = nyZone)
         val splitTokyo = summarize(split, now = splitNow, historyStartMs = history, inZone = tokyoZone)
         assertEquals(1, splitNy.streak)
         assertEquals(1, splitNy.bestRecordedStreak)
-        assertEquals(2, splitTokyo.streak)
-        assertEquals(2, splitTokyo.bestRecordedStreak)
+        assertEquals(1, splitTokyo.streak)
+        assertEquals(1, splitTokyo.bestRecordedStreak)
     }
 
     @Test fun S18_summaryIsOrderIndependentForTheSameEvents() {
