@@ -112,11 +112,22 @@ public enum FlintHistoryAggregator {
                 }
             }
         }
-        let completedDays = Set(sessions.filter { $0.outcome == .completed }.compactMap {
-            committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, today: today, calendar: calendar)
+        let recordedDays = Set(sessions.filter { $0.outcome == .completed }.compactMap {
+            committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, calendar: calendar)
         })
-        let streak = currentStreak(completedDays: completedDays, today: today, historyStart: historyDay, calendar: calendar)
-        let best = max(streak, bestRecordedStreak(completedDays: completedDays, historyStart: historyDay, calendar: calendar))
+        // A completion recorded in a zone ahead of the device can name tomorrow. Anchor the
+        // current streak on that recorded day (at most one day ahead) instead of rewriting it
+        // to today, so best streak keeps every distinct recorded day and no false continuity
+        // is invented between non-adjacent recorded days.
+        let referenceToday: Date = {
+            guard let latest = recordedDays.max(), latest > today else { return today }
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+            return min(latest, tomorrow)
+        }()
+        let streak = currentStreak(completedDays: recordedDays, today: referenceToday,
+                                   historyStart: historyDay, calendar: calendar)
+        let best = max(streak, bestRecordedStreak(completedDays: recordedDays,
+                                                  historyStart: historyDay, calendar: calendar))
         return .init(availability: snapshot.availability, sessions: sessions, days: days,
                      streak: streak, bestRecordedStreak: best)
     }
@@ -127,24 +138,20 @@ public enum FlintHistoryAggregator {
     ///
     /// Each completed day is the one recorded on the session's terminal event (`tz`), not the
     /// device's current zone, so moving the device cannot move a completion to a neighbouring
-    /// day and extend or shorten a streak. The chart's `days` stay device-local; anchors are
-    /// clamped to device `today` so both views of "today" agree.
+    /// day and extend or shorten a streak. The chart's `days` stay device-local. When the
+    /// latest recorded day is ahead of device today, callers anchor the current streak on that
+    /// recorded day instead of rewriting other recorded days.
     ///
     /// Map a completion to the local day recorded on its terminal event, expressed as a
     /// day anchor in the current calendar. The recorded zone fixes the day components, so a
     /// later device-zone change cannot move the completion to a neighbouring day.
-    ///
-    /// A zone ahead of the device can name a day after device `today` for a completion made
-    /// moments ago; clamp it so `days.last.completed` (a device-day chart) and the streak
-    /// agree instead of the streak reporting a false zero. A future day is never credited.
-    private static func committedDay(for date: Date, timeZone: TimeZone?, today: Date,
+    private static func committedDay(for date: Date, timeZone: TimeZone?,
                                      calendar: Calendar) -> Date? {
         guard let timeZone else { return calendar.startOfDay(for: date) }
         var source = calendar
         source.timeZone = timeZone
         let components = source.dateComponents([.year, .month, .day], from: date)
-        guard let day = calendar.date(from: components) else { return nil }
-        return min(day, today)
+        return calendar.date(from: components)
     }
 
     public static func currentStreak(completedDays: Set<Date>, today: Date, historyStart: Date?,

@@ -111,15 +111,22 @@ object FocusHistoryAggregator {
             )
         }.toList()
         val today = date(now, zone)
-        // Streak attribution uses the civil day recorded on each terminal event, clamped to
-        // device today so the badge and the device-local chart cannot disagree. Legacy sessions
-        // without a usable recorded zone fall back to the device zone.
-        val completedDays = sessions.asSequence()
+        // Streak attribution uses the civil day recorded on each terminal event. Current streak
+        // anchors on the latest recorded day when it is ahead of device today (at most one day),
+        // so an ahead-zone completion is not a false zero. Best streak keeps every distinct
+        // recorded day, and chart counts above stay device-local.
+        val recordedDays = sessions.asSequence()
             .filter { it.outcome == SessionOutcome.COMPLETED }
-            .map { session -> recordedDay(session, zone).let { if (it > today) today else it } }
+            .map { session -> recordedDay(session, zone) }
             .toSet()
-        val streak = currentStreak(completedDays, today, startDate)
-        val best = maxOf(streak, bestRecordedStreak(completedDays, startDate))
+        val latestRecorded = recordedDays.maxOrNull()
+        val referenceToday = if (latestRecorded != null && latestRecorded > today) {
+            if (latestRecorded > today.plusDays(1)) today.plusDays(1) else latestRecorded
+        } else {
+            today
+        }
+        val streak = currentStreak(recordedDays, referenceToday, startDate)
+        val best = maxOf(streak, bestRecordedStreak(recordedDays, startDate))
         return FocusSummary(availability, sessions, days, streak, bestRecordedStreak = best)
     }
 
@@ -131,7 +138,8 @@ object FocusHistoryAggregator {
      * Completed days are the civil dates recorded on each session's terminal event (`tz`), not
      * the device's current zone, so changing the device zone cannot move a completion to a
      * neighbouring day and extend or shorten a streak. The chart's [FocusDay] counts stay
-     * device-local, and recorded days ahead of device today are clamped to today.
+     * device-local. When the latest recorded day is ahead of device today, callers anchor the
+     * current streak on it instead of rewriting other recorded days.
      */
     fun currentStreak(completedDays: Set<LocalDate>, today: LocalDate, historyStart: LocalDate): Int {
         var cursor = if (today in completedDays) today else today.minusDays(1)

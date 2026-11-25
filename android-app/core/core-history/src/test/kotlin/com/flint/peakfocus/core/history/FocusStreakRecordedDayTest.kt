@@ -86,13 +86,44 @@ class FocusStreakRecordedDayTest {
     }
 
     /** Parity: iOS `testCompletionRecordedAheadOfDeviceZoneCountsToday`. */
-    @Test fun midnightAheadZoneCompletionIsClampedToToday() {
+    @Test fun midnightAheadZoneCompletionCountsToday() {
         val start = local(tokyo, "2026-10-29", "00:00:00")
         val end = local(tokyo, "2026-10-29", "01:00:00")
         val events = session("ahead", start, end, tokyo, tokyo)
         val result = summarize(events, now = local(ny, "2026-10-28", "12:00:00"), inZone = ny)
         assertEquals(1, result.streak)
         assertEquals(1, result.days.last().completed)
+    }
+
+    /** Parity: iOS `testAheadRecordedDaysKeepBestStreak`; a best streak must not decrease. */
+    @Test fun aheadRecordedDaysKeepBestStreak() {
+        val first = session(
+            "a", local(tokyo, "2026-10-28", "11:00:00"), local(tokyo, "2026-10-28", "12:00:00"),
+            tokyo, tokyo,
+        )
+        val second = session(
+            "b", local(tokyo, "2026-10-29", "00:00:00"), local(tokyo, "2026-10-29", "01:00:00"),
+            tokyo, tokyo,
+        )
+        val result = summarize(first + second, now = local(ny, "2026-10-28", "20:00:00"), inZone = ny)
+        assertEquals(2, result.streak)
+        assertEquals(2, result.bestRecordedStreak)
+        assertEquals(1, result.days.last().completed)
+    }
+
+    /** Parity: iOS `testGapInRecordedDaysDoesNotInventCurrentStreak`. */
+    @Test fun gapInRecordedDaysDoesNotInventCurrentStreak() {
+        val first = session(
+            "a", local(tokyo, "2026-10-27", "22:00:00"), local(tokyo, "2026-10-27", "23:00:00"),
+            tokyo, tokyo,
+        )
+        val second = session(
+            "b", local(tokyo, "2026-10-29", "00:00:00"), local(tokyo, "2026-10-29", "00:30:00"),
+            tokyo, tokyo,
+        )
+        val result = summarize(first + second, now = local(ny, "2026-10-28", "20:00:00"), inZone = ny)
+        assertEquals(1, result.streak)
+        assertEquals(1, result.bestRecordedStreak)
     }
 
     /** Duplicated and skipped local hours must not move a completion to another civil day. */

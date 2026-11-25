@@ -38,10 +38,15 @@ final class FlintStreakReviewFixTests: XCTestCase {
     private func session(day: Int, hour: Int = 22, id: String) -> [FlintHistoryEvent] {
         let start = date(ny, day: day, hour: hour)
         let end = start.addingTimeInterval(3600)
-        return [
-            FlintHistoryEvent(type: .started, session: id, at: start, timeZone: ny.timeZone,
+        return session(id: id, start: start, end: end, startZone: ny.timeZone, endZone: ny.timeZone)
+    }
+
+    private func session(id: String, start: Date, end: Date,
+                         startZone: TimeZone, endZone: TimeZone) -> [FlintHistoryEvent] {
+        [
+            FlintHistoryEvent(type: .started, session: id, at: start, timeZone: startZone,
                               plannedEnd: end, tier: "easy", source: "manual", name: "Focus"),
-            FlintHistoryEvent(type: .completed, session: id, at: end, timeZone: ny.timeZone),
+            FlintHistoryEvent(type: .completed, session: id, at: end, timeZone: endZone),
         ]
     }
 
@@ -85,14 +90,39 @@ final class FlintStreakReviewFixTests: XCTestCase {
     func testCompletionRecordedAheadOfDeviceZoneCountsToday() {
         let start = date(tokyo, day: 29, hour: 0)
         let end = start.addingTimeInterval(3600)
-        let events = [
-            FlintHistoryEvent(type: .started, session: "ahead", at: start, timeZone: tokyo.timeZone,
-                              plannedEnd: end, tier: "easy", source: "manual", name: "Focus"),
-            FlintHistoryEvent(type: .completed, session: "ahead", at: end, timeZone: tokyo.timeZone),
-        ]
+        let events = session(id: "ahead", start: start, end: end,
+                             startZone: tokyo.timeZone, endZone: tokyo.timeZone)
         let result = summarize(events, now: date(ny, day: 28, hour: 12), calendar: ny)
         XCTAssertEqual(result.streak, 1)
         XCTAssertEqual(result.days.last?.completed, 1)
+    }
+
+    /// Parity: Kotlin `aheadRecordedDaysKeepBestStreak`; a best streak must not decrease when
+    /// the recorded day is ahead of the device day.
+    func testAheadRecordedDaysKeepBestStreak() {
+        let first = session(id: "a", start: date(tokyo, day: 28, hour: 11),
+                            end: date(tokyo, day: 28, hour: 12),
+                            startZone: tokyo.timeZone, endZone: tokyo.timeZone)
+        let second = session(id: "b", start: date(tokyo, day: 29, hour: 0),
+                             end: date(tokyo, day: 29, hour: 1),
+                             startZone: tokyo.timeZone, endZone: tokyo.timeZone)
+        let result = summarize(first + second, now: date(ny, day: 28, hour: 20), calendar: ny)
+        XCTAssertEqual(result.streak, 2)
+        XCTAssertEqual(result.bestRecordedStreak, 2)
+        XCTAssertEqual(result.days.last?.completed, 1)
+    }
+
+    /// Parity: Kotlin `gapInRecordedDaysDoesNotInventCurrentStreak`.
+    func testGapInRecordedDaysDoesNotInventCurrentStreak() {
+        let first = session(id: "a", start: date(tokyo, day: 27, hour: 22),
+                            end: date(tokyo, day: 27, hour: 23),
+                            startZone: tokyo.timeZone, endZone: tokyo.timeZone)
+        let second = session(id: "b", start: date(tokyo, day: 29, hour: 0),
+                             end: date(tokyo, day: 29, hour: 0, minute: 30),
+                             startZone: tokyo.timeZone, endZone: tokyo.timeZone)
+        let result = summarize(first + second, now: date(ny, day: 28, hour: 20), calendar: ny)
+        XCTAssertEqual(result.streak, 1)
+        XCTAssertEqual(result.bestRecordedStreak, 1)
     }
 
     func testUnavailableHistoryNeverClaimsAStreak() {
