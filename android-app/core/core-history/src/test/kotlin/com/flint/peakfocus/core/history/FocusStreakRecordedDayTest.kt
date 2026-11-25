@@ -126,6 +126,20 @@ class FocusStreakRecordedDayTest {
         assertEquals(1, result.bestRecordedStreak)
     }
 
+    /** Parity: iOS `testFarFutureRecordedDayDoesNotSuppressYesterdayStreak`. */
+    @Test fun farFutureRecordedDayDoesNotSuppressYesterdayStreak() {
+        val yesterday = nySession("a", "2026-10-27", "22:00:00")
+        // A previously-fast clock recorded a terminal two days ahead of the device day.
+        val corrupt = session(
+            "b", local(ny, "2026-10-27", "22:00:00"), local(ny, "2026-10-30", "00:30:00"), ny, ny,
+        )
+        val result = summarize(
+            yesterday + corrupt, now = local(ny, "2026-10-28", "12:00:00"), inZone = ny,
+        )
+        assertEquals(1, result.streak)
+        assertEquals(1, result.bestRecordedStreak)
+    }
+
     /** Duplicated and skipped local hours must not move a completion to another civil day. */
     @Test fun daylightSavingTransitionsKeepTheRecordedCivilDay() {
         // Fall back: 2026-11-01 repeats 01:00-02:00 America/New_York.

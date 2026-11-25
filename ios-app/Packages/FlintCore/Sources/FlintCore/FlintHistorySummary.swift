@@ -116,13 +116,13 @@ public enum FlintHistoryAggregator {
             committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, calendar: calendar)
         })
         // A completion recorded in a zone ahead of the device can name tomorrow. Anchor the
-        // current streak on that recorded day (at most one day ahead) instead of rewriting it
-        // to today, so best streak keeps every distinct recorded day and no false continuity
-        // is invented between non-adjacent recorded days.
+        // current streak on tomorrow only when that day was actually recorded; corrupt or
+        // far-future recorded days are ignored so the usual today/yesterday grace still
+        // applies, and best streak keeps every distinct recorded day.
         let referenceToday: Date = {
-            guard let latest = recordedDays.max(), latest > today else { return today }
-            let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-            return min(latest, tomorrow)
+            guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: today),
+                  recordedDays.contains(tomorrow) else { return today }
+            return tomorrow
         }()
         let streak = currentStreak(completedDays: recordedDays, today: referenceToday,
                                    historyStart: historyDay, calendar: calendar)
@@ -138,9 +138,9 @@ public enum FlintHistoryAggregator {
     ///
     /// Each completed day is the one recorded on the session's terminal event (`tz`), not the
     /// device's current zone, so moving the device cannot move a completion to a neighbouring
-    /// day and extend or shorten a streak. The chart's `days` stay device-local. When the
-    /// latest recorded day is ahead of device today, callers anchor the current streak on that
-    /// recorded day instead of rewriting other recorded days.
+    /// day and extend or shorten a streak. The chart's `days` stay device-local. Callers anchor
+    /// the current streak on tomorrow only when tomorrow was recorded; other recorded days are
+    /// never rewritten.
     ///
     /// Map a completion to the local day recorded on its terminal event, expressed as a
     /// day anchor in the current calendar. The recorded zone fixes the day components, so a

@@ -125,6 +125,18 @@ final class FlintStreakReviewFixTests: XCTestCase {
         XCTAssertEqual(result.bestRecordedStreak, 1)
     }
 
+    /// Parity: Kotlin `farFutureRecordedDayDoesNotSuppressYesterdayStreak`. A corrupt or
+    /// previously-fast terminal two days ahead must not consume the yesterday grace day.
+    func testFarFutureRecordedDayDoesNotSuppressYesterdayStreak() {
+        let yesterday = session(day: 27, id: "a")
+        let corrupt = session(id: "b", start: date(ny, day: 27, hour: 22),
+                              end: date(ny, day: 30, hour: 0, minute: 30),
+                              startZone: ny.timeZone, endZone: ny.timeZone)
+        let result = summarize(yesterday + corrupt, now: date(ny, day: 28, hour: 12), calendar: ny)
+        XCTAssertEqual(result.streak, 1)
+        XCTAssertEqual(result.bestRecordedStreak, 1)
+    }
+
     func testUnavailableHistoryNeverClaimsAStreak() {
         let events = session(day: 27, id: "a")
         let result = summarize(events, now: date(ny, day: 28, hour: 12),
