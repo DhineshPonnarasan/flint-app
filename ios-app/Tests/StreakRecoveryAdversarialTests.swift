@@ -85,7 +85,7 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
     }
 
     func testExpiredRecoveryRejectedDespiteStaleUiNow() {
-        var clockNow = at(dayOffset: 0, hour: 18)
+        let clockNow = at(dayOffset: 0, hour: 18)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("FlintRecoveryExp-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -253,9 +253,10 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         XCTAssertTrue(store.clear(keepingRunningSession: nil))
         let after = store.read()
         XCTAssertTrue(after.events.contains { $0.type == .streakRecovered })
-        XCTAssertFalse("a clear must not refund the allowance", StreakRecoveryPolicy.tokenAvailable(
+        XCTAssertFalse(StreakRecoveryPolicy.tokenAvailable(
             events: after.events,
-            nowMs: FlintHistoryEvent.milliseconds(now.addingTimeInterval(86_400))))
+            nowMs: FlintHistoryEvent.milliseconds(now.addingTimeInterval(86_400))),
+            "a clear must not refund the allowance")
         let summary = FlintHistoryAggregator.summarize(
             after, activeSessionID: nil, now: now, calendar: calendar)
         XCTAssertEqual(summary.streak, 0)
