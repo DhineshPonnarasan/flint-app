@@ -261,7 +261,8 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         XCTAssertEqual(summary.streak, 0)
     }
 
-    /// One unreadable row must fail closed, not silently re-open the free allowance.    func testDegradedHistoryCannotCommitRecovery() {
+    /// One unreadable row must fail closed, not silently re-open the free allowance.
+    func testDegradedHistoryCannotCommitRecovery() {
         let now = at(dayOffset: 0, hour: 18)
         let (store, _) = openStore(now: now)
         seedCompleted(store, id: "a", dayOffset: -2, minutes: 30)
