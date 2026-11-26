@@ -66,6 +66,19 @@ class RecoveryChallengeGuardStore(
     }
 
     /**
+     * Atomic view for the enforcement watcher: which challenge is bound and whether its
+     * continuity is intact. Reading the profile and the continuity under one lock avoids a
+     * seed race when a bind lands between two watcher samples.
+     */
+    data class ActiveBinding(val challengeId: String, val intact: Boolean)
+
+    @Synchronized
+    internal fun activeBinding(): ActiveBinding? {
+        val profile = current() ?: return null
+        return ActiveBinding(profile.challengeId, isEnforcementIntact())
+    }
+
+    /**
      * Called once by the app shell at process start, before it samples health.
      *
      * A freeze bound by a previous process generation cannot prove that enforcement stayed

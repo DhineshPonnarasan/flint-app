@@ -3,7 +3,13 @@ package com.flint.peakfocus.core.history
 import java.io.File
 import java.time.LocalDate
 import kotlin.io.path.createTempDirectory
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -193,6 +199,104 @@ class RecoveryEnforcementWatchTest {
         // A new instance models the next process reading the same sidecar.
         val reopened = RecoveryChallengeGuardStore(dir)
         assertFalse(reopened.isEnforcementIntact())
+        assertTrue(durableBroken(dir))
+    }
+
+    /**
+     * Production wiring: the watcher starts before any challenge exists, and a bind later feeds
+     * `binding = { guard.activeBinding() }`. A drop that lands before the watcher's next sample
+     * must still latch, because the bind itself verified enforcement.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun aChallengeBoundAfterWatcherStartLatchesItsFirstDrop() = runTest {
+        val dir = createTempDirectory("flint-watch-late-bind").toFile()
+        val guard = RecoveryChallengeGuardStore(dir)
+        var healthy = true
+        val job = launch {
+            RecoveryEnforcementWatch.watch(
+                guard = guard,
+                freezeActive = { guard.current() != null },
+                pathAHealthy = { healthy },
+                intervalMs = 1_000,
+                iterations = 3,
+                binding = { guard.activeBinding() },
+            )
+        }
+        runCurrent() // sample 1: no freeze, exactly like app startup
+        assertNull(guard.current())
+
+        assertNotNull(guard.ensureFrozen(packages, false, today, today.minusDays(1), 0L))
+        healthy = false // the service drops before the watcher's next sample
+        advanceTimeBy(1_000)
+        runCurrent() // sample 2 must seed from the bind and latch the drop
+
+        assertFalse(
+            "a challenge bound after watcher start must latch its first drop",
+            guard.isEnforcementIntact(),
+        )
+        assertTrue(durableBroken(dir))
+        advanceUntilIdle()
+        job.join()
+    }
+
+    /** A new challenge seeds its own state instead of inheriting the previous day's break. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun aNewChallengeSeedsItsOwnStateInsteadOfInheritingTheLatch() = runTest {
+        val dir = createTempDirectory("flint-watch-reseed").toFile()
+        val guard = RecoveryChallengeGuardStore(dir)
+        var healthy = true
+        val job = launch {
+            RecoveryEnforcementWatch.watch(
+                guard = guard,
+                freezeActive = { guard.current() != null },
+                pathAHealthy = { healthy },
+                intervalMs = 1_000,
+                iterations = 6,
+                binding = { guard.activeBinding() },
+            )
+        }
+        runCurrent()
+        assertNotNull(guard.ensureFrozen(packages, false, today, today.minusDays(1), 0L))
+        healthy = false
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertFalse(guard.isEnforcementIntact())
+
+        // A genuinely new day binds a fresh challenge while enforcement is healthy.
+        healthy = true
+        val next = today.plusDays(1)
+        assertNotNull(guard.ensureFrozen(packages, false, next, today, 0L))
+        assertTrue("a new day must not inherit the previous day's latch", guard.isEnforcementIntact())
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertTrue(guard.isEnforcementIntact())
+
+        // Its own drop must latch too.
+        healthy = false
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertFalse(guard.isEnforcementIntact())
+        advanceUntilIdle()
+        job.join()
+    }
+
+    /** A freeze bound by a previous process is never seeded healthy, even while Path A is up. */
+    @Test fun aPreviousProcessFreezeIsNeverSeededAsHealthy() = runBlocking {
+        val dir = createTempDirectory("flint-watch-stale").toFile()
+        val first = RecoveryChallengeGuardStore(dir)
+        assertNotNull(first.ensureFrozen(packages, false, today, today.minusDays(1), 0L))
+
+        val second = RecoveryChallengeGuardStore(dir)
+        second.noteWatchStarted() // a previous generation cannot prove continuity
+        RecoveryEnforcementWatch.watch(
+            guard = second,
+            freezeActive = { second.current() != null },
+            pathAHealthy = { true },
+            intervalMs = 0,
+            iterations = 2,
+            binding = { second.activeBinding() },
+        )
+        assertFalse("a stale freeze stays broken", second.isEnforcementIntact())
         assertTrue(durableBroken(dir))
     }
 }

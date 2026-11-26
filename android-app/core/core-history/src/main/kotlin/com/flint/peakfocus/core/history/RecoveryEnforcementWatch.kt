@@ -33,14 +33,32 @@ object RecoveryEnforcementWatch {
          * would otherwise be unlatched.
          */
         initiallyHealthy: Boolean = false,
+        /**
+         * Identity and verified-at-bind health of the active freeze. A new challenge id re-seeds
+         * the policy from the bind's verification, so a freeze bound *after* the watcher started
+         * latches its first drop instead of waiting for a later healthy sample. Old callers that
+         * only pass [freezeActive] keep the previous behaviour.
+         */
+        binding: () -> RecoveryChallengeGuardStore.ActiveBinding? = { null },
     ) {
         var state = RecoveryEnforcementWatchPolicy.State(
             observedHealthyWhileFrozen = initiallyHealthy,
         )
+        var lastChallengeId: String? = null
         var sample = 0
         while (sample < iterations) {
-            // Nothing to watch without a bound challenge; do not even read enforcement health.
             val frozen = freezeActive()
+            val active = if (frozen) binding() else null
+            if (active != null && active.challengeId != lastChallengeId) {
+                // `ensureFrozen` only writes a profile after verifying enforcement, so the bind is
+                // this challenge's first healthy observation. A stale profile from a previous
+                // process is not intact; seeding false keeps the durable latch in force.
+                state = RecoveryEnforcementWatchPolicy.State(
+                    observedHealthyWhileFrozen = active.intact,
+                )
+            }
+            lastChallengeId = active?.challengeId
+            // Nothing to watch without a bound challenge; do not even read enforcement health.
             val decision = RecoveryEnforcementWatchPolicy.next(
                 state = state,
                 freezeActive = frozen,

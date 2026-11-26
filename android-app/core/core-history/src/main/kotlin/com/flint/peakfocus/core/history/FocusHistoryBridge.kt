@@ -252,6 +252,8 @@ object FocusHistoryBridge {
                 // The bind already verified enforcement (healthyNow), so the first drop must
                 // latch instead of waiting for a later healthy sample.
                 initiallyHealthy = guard.isEnforcementIntact(),
+                // A challenge bound after this watcher started re-seeds from that verification.
+                binding = { guard.activeBinding() },
             )
         }
     }

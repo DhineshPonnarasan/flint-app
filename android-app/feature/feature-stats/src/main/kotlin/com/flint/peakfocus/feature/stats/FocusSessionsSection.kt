@@ -260,22 +260,28 @@ private fun StreakRecoveryCard(summary: FocusSummary?) {
     }
     val offer = eligibility as? StreakRecoveryPolicy.Eligibility.Offer
     val inspection = androidx.compose.ui.platform.LocalInspectionMode.current
+    // Enforcement is a live fact from the real service instance, not the Settings string.
+    val enforcementReady = remember(now) { FocusHistoryBridge.enforcementReady() }
     var protection by remember { mutableStateOf<StreakRecoveryProtection.BoundProfile?>(null) }
     // Durable binding is a side effect, never composition: it writes the challenge freeze to
     // disk and must not run while a frame is being built (or in a preview).
-    androidx.compose.runtime.LaunchedEffect(offer?.challenge?.recoveryDay, inspection) {
+    androidx.compose.runtime.LaunchedEffect(
+        offer?.challenge?.recoveryDay, inspection, enforcementReady,
+    ) {
         val challenge = offer?.challenge
         protection = if (challenge == null || inspection) {
             null
         } else {
-            val bound = FocusHistoryBridge.bindRecoveryProtectionOnIo(context, challenge)
-            bound.profile ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                FocusHistoryBridge.activeRecoveryProtection(context, challenge.recoveryDay)
+            // A bind can fail while enforcement is starting. Retry is bounded, and a challenge
+            // change cancels the effect before a stale profile can be published.
+            RecoveryBindRetry.run {
+                val bound = FocusHistoryBridge.bindRecoveryProtectionOnIo(context, challenge)
+                bound.profile ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    FocusHistoryBridge.activeRecoveryProtection(context, challenge.recoveryDay)
+                }
             }
         }
     }
-    // Enforcement is a live fact from the real service instance, not the Settings string.
-    val enforcementReady = remember(now) { FocusHistoryBridge.enforcementReady() }
     val enforcementIntact = remember(now, protection, enforcementReady) {
         enforcementReady && FocusHistoryBridge.recoveryGuard(context).isEnforcementIntact()
     }
@@ -290,27 +296,54 @@ private fun StreakRecoveryCard(summary: FocusSummary?) {
         recoveryFloorAt = snapshot.recoveryFloorAt,
         enforcementReady = enforcementReady,
     )
+    val uiOffer = ui as? StreakRecoveryUi.Offer
     var committing by remember { mutableStateOf(false) }
     var celebration by remember { mutableStateOf(false) }
     // A refusal must be visible: the card otherwise sits on "confirming" forever.
     var recoveryFailure by remember { mutableStateOf<String?>(null) }
-    // Keyed on the rendered offer, not the 1 Hz clock: a rejection must not re-enter the store
-    // lock every second. It retries only when the challenge state itself changes.
-    androidx.compose.runtime.LaunchedEffect(ui, celebration, recoveryFailure) {
-        val offer = ui as? StreakRecoveryUi.Offer ?: return@LaunchedEffect
-        if (!offer.satisfied || committing || celebration || recoveryFailure != null) return@LaunchedEffect
+    // Bumped only when a genuinely new attempt context begins (a new challenge day, a fresh
+    // freeze, or recovered enforcement). It restarts the commit effect after a failure without
+    // letting the failure itself re-enter the store lock.
+    var retryNonce by remember { mutableStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(
+        offer?.challenge?.recoveryDay, offer?.challenge?.requiredFocusedMs,
+        protection?.challengeId, enforcementIntact,
+    ) {
+        if (recoveryFailure != null) {
+            recoveryFailure = null
+            retryNonce++
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(
+        offer?.challenge?.recoveryDay, uiOffer?.satisfied, retryNonce, celebration,
+    ) {
+        val commitOffer = uiOffer ?: return@LaunchedEffect
+        if (!commitOffer.satisfied || committing || celebration || recoveryFailure != null) {
+            return@LaunchedEffect
+        }
         committing = true
         // The bridge re-checks the live service probe, the durable latch and live protection.
-        when (
-            FocusHistoryBridge.tryCommitStreakRecovery(context, zone = zone)
-        ) {
-            is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Success -> celebration = true
-            is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Rejected ->
-                recoveryFailure = StreakRecoveryCopy.CONFIRM_FAILED
-            com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.PersistFailed ->
-                recoveryFailure = StreakRecoveryCopy.PERSIST_FAILED
+        try {
+            RecoveryCommitAttempt.run(
+                commit = {
+                    when (FocusHistoryBridge.tryCommitStreakRecovery(context, zone = zone)) {
+                        is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Success ->
+                            RecoveryCommitResult.SUCCESS
+                        is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Rejected ->
+                            RecoveryCommitResult.REJECTED
+                        com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.PersistFailed ->
+                            RecoveryCommitResult.PERSIST_FAILED
+                    }
+                },
+                onFailure = { recoveryFailure = it },
+                onSuccess = {
+                    recoveryFailure = null
+                    celebration = true
+                },
+            )
+        } finally {
+            committing = false
         }
-        committing = false
     }
     when (ui) {
         StreakRecoveryUi.Hidden -> Unit

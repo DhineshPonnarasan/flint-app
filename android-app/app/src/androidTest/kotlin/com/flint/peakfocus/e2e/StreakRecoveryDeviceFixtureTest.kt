@@ -20,6 +20,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -322,5 +323,151 @@ class StreakRecoveryDeviceFixtureTest {
         val summary = FocusHistoryAggregator.summarize(history.snapshots.value, now, zone, emptySet())
         assertEquals(61, summary.streak)
         assertEquals(61, summary.bestRecordedStreak)
+    }
+
+    // MARK: - M1 watcher bind seeding (Phase 20)
+    //
+    // The bind is injected at the sample boundary — exactly where the card's bind can land
+    // between two samples — so the production loop observes it deterministically. The policy
+    // state is never seeded by hand: only `binding = { guard.activeBinding() }` feeds it.
+
+    private fun latchFile(dir: File) = File(dir, "recovery-enforcement-latch.v1.json")
+
+    private fun latchedDurably(dir: File): Boolean {
+        val file = latchFile(dir)
+        return file.isFile && file.readText().contains("challengeId")
+    }
+
+    private fun latchedDay(dir: File): String? {
+        val file = latchFile(dir)
+        if (!file.isFile) return null
+        return Regex("\"recoveryDay\":\"([^\"]+)\"").find(file.readText())?.groupValues?.get(1)
+    }
+
+    /**
+     * Public equivalent of the module-internal `activeBinding()` used by the production wiring:
+     * the challenge identity plus its verified continuity, read from the same guard store. The
+     * watcher's `binding` callback is the code under test here; the atomic helper itself stays
+     * internal and is covered by the core-history JVM suite.
+     */
+    private fun bindingOf(guard: RecoveryChallengeGuardStore) =
+        guard.current()?.let {
+            RecoveryChallengeGuardStore.ActiveBinding(it.challengeId, guard.isEnforcementIntact())
+        }
+
+    @Test fun watcherSeedsFromTheBindAndLatchesItsFirstDrop() = runBlocking {
+        val dir = File(root, "watch-bind").apply { mkdirs() }
+        val fixedMs = at(today, 18)
+        val guard = RecoveryChallengeGuardStore(dir, clock = { fixedMs })
+        assertNull("the watcher starts before any challenge", guard.current())
+
+        var healthy = false // the interruption lands with the bind
+        var started = false
+        var sawNoBinding = false
+        var bound = false
+
+        RecoveryEnforcementWatch.watch(
+            guard = guard,
+            freezeActive = {
+                if (!started) {
+                    started = true
+                    sawNoBinding = guard.current() == null
+                    false
+                } else if (!bound) {
+                    // A challenge is bound between two samples while enforcement is healthy.
+                    bound = true
+                    assertNotNull(
+                        guard.ensureFrozen(
+                            packages, false, today, today.minusDays(1), fixedMs, healthyNow = true,
+                        ),
+                    )
+                    true
+                } else {
+                    guard.current() != null
+                }
+            },
+            pathAHealthy = { healthy },
+            intervalMs = 0,
+            iterations = 2,
+            binding = { bindingOf(guard) },
+        )
+
+        assertTrue("the first sample must see no active challenge", sawNoBinding)
+        assertTrue(bound)
+        assertFalse("the first drop after a verified bind must latch", guard.isEnforcementIntact())
+        assertTrue("the latch must be durable", latchedDurably(dir))
+
+        // Restoring enforcement must never clear the latch.
+        healthy = true
+        RecoveryEnforcementWatch.watch(
+            guard = guard,
+            freezeActive = { guard.current() != null },
+            pathAHealthy = { healthy },
+            intervalMs = 0,
+            iterations = 2,
+            binding = { bindingOf(guard) },
+        )
+        assertFalse("re-enabling enforcement must not clear the latch", guard.isEnforcementIntact())
+        assertTrue(latchedDurably(dir))
+    }
+
+    @Test fun aNewChallengeSeedsItsOwnStateAfterABreak() = runBlocking {
+        val dir = File(root, "watch-reseed").apply { mkdirs() }
+        val fixedMs = at(today, 18)
+        val guard = RecoveryChallengeGuardStore(dir, clock = { fixedMs })
+        assertNotNull(
+            guard.ensureFrozen(packages, false, today, today.minusDays(1), fixedMs, healthyNow = true),
+        )
+
+        RecoveryEnforcementWatch.watch(
+            guard = guard, freezeActive = { guard.current() != null },
+            pathAHealthy = { false }, intervalMs = 0, iterations = 1,
+            binding = { bindingOf(guard) },
+        )
+        assertFalse(guard.isEnforcementIntact())
+        assertEquals(today.toString(), latchedDay(dir))
+
+        // A new day's challenge is seeded from its own bind, not from the previous latch.
+        val next = today.plusDays(1)
+        assertNotNull(guard.ensureFrozen(packages, false, next, today, fixedMs, healthyNow = true))
+        assertTrue("a new day must not inherit the previous latch", guard.isEnforcementIntact())
+
+        RecoveryEnforcementWatch.watch(
+            guard = guard, freezeActive = { guard.current() != null },
+            pathAHealthy = { false }, intervalMs = 0, iterations = 1,
+            binding = { bindingOf(guard) },
+        )
+        assertFalse("the new challenge must latch its own first drop", guard.isEnforcementIntact())
+        assertEquals(next.toString(), latchedDay(dir))
+    }
+
+    @Test fun aStaleGenerationCannotOverwriteTheActiveChallengeState() = runBlocking {
+        val dir = File(root, "watch-stale").apply { mkdirs() }
+        val fixedMs = at(today, 18)
+        val active = RecoveryChallengeGuardStore(dir, clock = { fixedMs })
+        assertNotNull(
+            active.ensureFrozen(packages, false, today, today.minusDays(1), fixedMs, healthyNow = true),
+        )
+        assertTrue(active.markEnforcementBroken())
+        assertFalse(active.isEnforcementIntact())
+
+        // The next process reads the same freeze and must remain fail-closed.
+        val stale = RecoveryChallengeGuardStore(dir, clock = { fixedMs })
+        stale.noteWatchStarted()
+        assertFalse("a freeze from another process cannot prove continuity", stale.isEnforcementIntact())
+
+        RecoveryEnforcementWatch.watch(
+            guard = stale, freezeActive = { stale.current() != null },
+            pathAHealthy = { true }, intervalMs = 0, iterations = 2,
+            binding = { bindingOf(stale) },
+        )
+        assertFalse("healthy samples must not clear the stale latch", stale.isEnforcementIntact())
+
+        // Re-binding the same day returns the stored freeze; it cannot be replaced as healthy.
+        assertNotNull(
+            stale.ensureFrozen(packages, false, today, today.minusDays(1), fixedMs, healthyNow = true),
+        )
+        assertFalse("re-binding must not rehabilitate the stale freeze", stale.isEnforcementIntact())
+        assertTrue(latchedDurably(dir))
     }
 }

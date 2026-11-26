@@ -115,7 +115,8 @@ struct FocusHistorySection: View {
                 allowListMode: false,
                 recoveryDay: challenge.recoveryDay,
                 missedDay: challenge.missedDay,
-                frozenAtMs: FlintHistoryEvent.milliseconds(now)
+                frozenAtMs: FlintHistoryEvent.milliseconds(now),
+                calendar: calendar
             ) ?? guardStore.current()
         }()
         let enforcementIntact = guardStore.isEnforcementIntact() && authorizationApproved

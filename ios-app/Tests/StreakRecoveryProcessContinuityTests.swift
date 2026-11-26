@@ -252,4 +252,130 @@ final class StreakRecoveryProcessContinuityTests: XCTestCase {
             )
         )
     }
+
+    /// A time-zone change within the same civil day must keep the durable enforcement latch.
+    func testTimeZoneChangeOnTheSameCivilDayKeepsTheBrokenLatch() throws {
+        let d = defaults()
+        let guardStore = RecoveryChallengeGuardStore(defaults: d)
+        var losAngeles = Calendar(identifier: .gregorian)
+        losAngeles.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+
+        let noonNewYork = calendar.date(byAdding: .hour, value: 12, to: today)!
+        let newYorkDay = calendar.startOfDay(for: noonNewYork)
+        let losAngelesDay = losAngeles.startOfDay(for: noonNewYork)
+        XCTAssertNotEqual(newYorkDay, losAngelesDay, "a zone change moves the start-of-day instant")
+        XCTAssertTrue(calendar.isDate(newYorkDay, inSameDayAs: losAngelesDay))
+
+        let bound = guardStore.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: newYorkDay, missedDay: newYorkDay.addingTimeInterval(-86_400),
+            frozenAtMs: 0, calendar: calendar)
+        XCTAssertNotNil(bound)
+        guardStore.markEnforcementBroken()
+        XCTAssertFalse(guardStore.isEnforcementIntact())
+
+        // The device moves west while the civil day is unchanged; the card rebinds.
+        let rebound = guardStore.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: losAngelesDay, missedDay: losAngelesDay.addingTimeInterval(-86_400),
+            frozenAtMs: 0, calendar: losAngeles)
+        XCTAssertEqual(rebound?.enforcementBroken, true,
+                       "the same civil day must keep the existing freeze")
+        XCTAssertEqual(rebound?.recoveryDay, newYorkDay,
+                       "the original freeze must be reused rather than re-bound")
+        XCTAssertFalse(guardStore.isEnforcementIntact())
+
+        // The authoritative commit path must still refuse the broken challenge.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FlintTzLatch-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = FlintHistoryStore(
+            directory: directory, clock: { noonNewYork }, calendar: calendar, isHost: true,
+            ledgerAuthenticator: ledgerAuthenticator,
+            liveSelectionFingerprint: { self.fingerprint })
+        XCTAssertEqual(
+            StreakRecoveryCommitter.tryCommit(
+                store: store, calendar: calendar, protection: rebound, protectionActive: true),
+            .rejected(reason: "protection_inactive"))
+    }
+
+    /// A genuinely different civil day still binds a fresh, unbroken challenge.
+    func testANewCivilDayBindsAFreshUnbrokenChallenge() throws {
+        let d = defaults()
+        let guardStore = RecoveryChallengeGuardStore(defaults: d)
+        let noonNewYork = calendar.date(byAdding: .hour, value: 12, to: today)!
+        let day = calendar.startOfDay(for: noonNewYork)
+        let bound = guardStore.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: day, missedDay: day.addingTimeInterval(-86_400),
+            frozenAtMs: 0, calendar: calendar)
+        guardStore.markEnforcementBroken()
+
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: day)!
+        let fresh = guardStore.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: nextDay, missedDay: day,
+            frozenAtMs: 0, calendar: calendar)
+        XCTAssertNotEqual(fresh?.recoveryDay, bound?.recoveryDay, "a new day must rebind")
+        XCTAssertEqual(fresh?.recoveryDay, nextDay)
+        XCTAssertEqual(fresh?.enforcementBroken, false)
+        XCTAssertEqual(fresh?.watchGeneration,
+                       RecoveryChallengeGuardStore.currentProcessGeneration)
+        XCTAssertTrue(guardStore.isEnforcementIntact())
+    }
+
+    /// A profile persisted before `recoveryDayKey` existed decodes with a nil key and falls back
+    /// to the calendar comparison instead of failing to decode or dropping the latch.
+    func testLegacyProfileWithoutADayKeyDecodesAndKeepsTheSameDay() throws {
+        let suite = "flint.recovery.legacy-key.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let day = calendar.startOfDay(for: today)
+        let legacy = StreakRecoveryProtection.BoundProfile(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            frozenAtMs: 0, qualifiedSessionIds: [], enforcementBroken: true,
+            watchGeneration: RecoveryChallengeGuardStore.currentProcessGeneration)
+
+        let encoded = try JSONEncoder().encode(legacy)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "recoveryDayKey")
+        let withoutKey = try JSONSerialization.data(withJSONObject: object)
+        defaults.set(withoutKey, forKey: RecoveryChallengeGuardStore.storageKey)
+
+        let store = RecoveryChallengeGuardStore(defaults: defaults)
+        let decoded = try XCTUnwrap(store.current())
+        XCTAssertNil(decoded.recoveryDayKey)
+        let rebound = store.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            frozenAtMs: 0, calendar: calendar)
+        XCTAssertEqual(rebound?.enforcementBroken, true,
+                       "a legacy profile must be reused, not replaced")
+    }
+
+    /// The recorded day key is Gregorian, so an alternate device calendar cannot change it.
+    func testAlternateCalendarOnTheSameDayKeepsTheBrokenLatch() throws {
+        let d = defaults()
+        let guardStore = RecoveryChallengeGuardStore(defaults: d)
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = calendar.timeZone
+        let day = calendar.startOfDay(for: today)
+
+        let bound = guardStore.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            frozenAtMs: 0, calendar: buddhist)
+        XCTAssertNotNil(bound)
+        guardStore.markEnforcementBroken()
+
+        let rebound = guardStore.ensureFrozen(
+            fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
+            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            frozenAtMs: 0, calendar: calendar)
+        XCTAssertEqual(rebound?.recoveryDay, day)
+        XCTAssertEqual(rebound?.enforcementBroken, true)
+        XCTAssertFalse(guardStore.isEnforcementIntact())
+    }
 }

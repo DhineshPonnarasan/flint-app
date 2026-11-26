@@ -30,6 +30,10 @@ public enum StreakRecoveryProtection {
         public var enforcementBroken: Bool
         /// Process generation that bound the freeze. `nil` on legacy profiles, which fail closed.
         public var watchGeneration: String?
+        /// Civil day (`yyyy-MM-dd`) recorded at bind, independent of the start-of-day instant.
+        /// A time-zone change on the same day keeps this key, so the broken latch survives;
+        /// legacy profiles have no key and fall back to a calendar comparison.
+        public var recoveryDayKey: String?
 
         /// Nothing was frozen yet (no fingerprint, or no shielded surface to enforce).
         public var isEmpty: Bool { fingerprint.isEmpty || applicationCount <= 0 }
@@ -37,7 +41,7 @@ public enum StreakRecoveryProtection {
         public init(fingerprint: String, applicationCount: Int, allowListMode: Bool,
                     recoveryDay: Date, missedDay: Date, frozenAtMs: Int64,
                     qualifiedSessionIds: [String] = [], enforcementBroken: Bool = false,
-                    watchGeneration: String? = nil) {
+                    watchGeneration: String? = nil, recoveryDayKey: String? = nil) {
             self.fingerprint = fingerprint
             self.applicationCount = applicationCount
             self.allowListMode = allowListMode
@@ -47,6 +51,7 @@ public enum StreakRecoveryProtection {
             self.qualifiedSessionIds = qualifiedSessionIds
             self.enforcementBroken = enforcementBroken
             self.watchGeneration = watchGeneration
+            self.recoveryDayKey = recoveryDayKey
         }
     }
 

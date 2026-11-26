@@ -52,10 +52,22 @@ public final class RecoveryChallengeGuardStore: @unchecked Sendable {
     @discardableResult
     public func ensureFrozen(fingerprint: String, applicationCount: Int, allowListMode: Bool,
                              recoveryDay: Date, missedDay: Date,
-                             frozenAtMs: Int64) -> StreakRecoveryProtection.BoundProfile? {
+                             frozenAtMs: Int64,
+                             calendar: Calendar = .current) -> StreakRecoveryProtection.BoundProfile? {
         guard !fingerprint.isEmpty, applicationCount > 0 else { return nil }
         lock.lock(); defer { lock.unlock() }
-        if let existing = loadLocked(), existing.recoveryDay == recoveryDay { return existing }
+        // Same *civil* day keeps the existing freeze (and its enforcement latch) even after a
+        // time-zone change moves the start-of-day instant. The day recorded at bind is compared
+        // when present, so the result is independent of the zone used for the new challenge;
+        // legacy profiles without a key fall back to the calendar comparison. Android keys the
+        // latch by LocalDate; comparing instants alone would let a zone change re-bind a broken
+        // challenge as healthy.
+        let dayKey = Self.dayKey(recoveryDay, calendar: calendar)
+        if let existing = loadLocked(), Self.isSameCivilDay(existing, dayKey: dayKey,
+                                                            recoveryDay: recoveryDay,
+                                                            calendar: calendar) {
+            return existing
+        }
         let fresh = StreakRecoveryProtection.BoundProfile(
             fingerprint: fingerprint,
             applicationCount: applicationCount,
@@ -65,10 +77,31 @@ public final class RecoveryChallengeGuardStore: @unchecked Sendable {
             frozenAtMs: frozenAtMs,
             qualifiedSessionIds: [],
             enforcementBroken: false,
-            watchGeneration: processGeneration
+            watchGeneration: processGeneration,
+            recoveryDayKey: dayKey
         )
         saveLocked(fresh)
         return fresh
+    }
+
+    /// Stable civil-day identity for a challenge day, independent of its zone's midnight instant.
+    ///
+    /// The day is read in Gregorian components using the caller's time zone: the key is then
+    /// unaffected by the device's locale, region or alternate-calendar setting, while a zone
+    /// change still maps the same local date to the same key at bind and at re-bind.
+    static func dayKey(_ day: Date, calendar: Calendar) -> String {
+        var civil = Calendar(identifier: .gregorian)
+        civil.timeZone = calendar.timeZone
+        let components = civil.dateComponents([.year, .month, .day], from: day)
+        return "\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+    }
+
+    private static func isSameCivilDay(_ profile: StreakRecoveryProtection.BoundProfile,
+                                       dayKey: String,
+                                       recoveryDay: Date,
+                                       calendar: Calendar) -> Bool {
+        if let stored = profile.recoveryDayKey { return stored == dayKey }
+        return calendar.isDate(profile.recoveryDay, inSameDayAs: recoveryDay)
     }
 
     /// Records that a session started under the frozen selection. Bookkeeping only: the
