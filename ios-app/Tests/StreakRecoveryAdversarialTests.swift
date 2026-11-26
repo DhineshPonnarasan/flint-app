@@ -9,6 +9,11 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         return c
     }
     private let fingerprint = "v1|test|instagram"
+    /// Deterministic ledger signing. The simulator test runner has no Keychain entitlement, so
+    /// the production install marker would be `.unknown` and every recovery commit would be
+    /// refused; these tests exercise the policy and committer, not the Keychain binding.
+    private let ledgerAuthenticator = HMACRecoveryLedgerAuthenticator(
+        key: Data(repeating: 0x0A, count: 32))
     private func protection(dayOffset: Int = 0) -> StreakRecoveryProtection.BoundProfile {
         let recovery = calendar.date(byAdding: .day, value: dayOffset, to: today)!
         let missed = calendar.date(byAdding: .day, value: dayOffset - 1, to: today)!
@@ -39,6 +44,7 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         // seam models "the picker has not changed" without needing system tokens.
         let store = FlintHistoryStore(
             directory: directory, clock: { clockNow }, calendar: calendar, isHost: true,
+            ledgerAuthenticator: ledgerAuthenticator,
             liveSelectionFingerprint: { self.fingerprint })
         _ = store.read() // stamp historyStart early
         clockNow = now
@@ -93,6 +99,7 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         var stamp = early
         let store = FlintHistoryStore(
             directory: directory, clock: { stamp }, calendar: calendar, isHost: true,
+            ledgerAuthenticator: ledgerAuthenticator,
             liveSelectionFingerprint: { self.fingerprint })
         _ = store.read()
         stamp = clockNow
@@ -198,6 +205,7 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         var stamp = calendar.date(byAdding: .day, value: -40, to: now)!
         let store = FlintHistoryStore(
             directory: directory, clock: { stamp }, calendar: calendar, isHost: true,
+            ledgerAuthenticator: ledgerAuthenticator,
             liveSelectionFingerprint: { self.fingerprint })
         _ = store.read()
         stamp = now
@@ -208,7 +216,9 @@ final class StreakRecoveryAdversarialTests: XCTestCase {
         ) else {
             return XCTFail("expected success")
         }
-        let reopened = FlintHistoryStore(directory: directory, clock: { stamp }, calendar: calendar, isHost: true)
+        let reopened = FlintHistoryStore(
+            directory: directory, clock: { stamp }, calendar: calendar, isHost: true,
+            ledgerAuthenticator: ledgerAuthenticator)
         let snap = reopened.read()
         XCTAssertEqual(snap.events.filter { $0.type == .streakRecovered }.count, 1)
         let summary = FlintHistoryAggregator.summarize(snap, activeSessionID: nil, now: now, calendar: calendar, dayCount: 7)

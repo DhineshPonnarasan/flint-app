@@ -142,9 +142,11 @@ decides:
   retention trim removed the proving row and something then removed the ledger file.
 * `absent` — genuinely new: eligible, and no cooldown is written.
 * `unknown` (the Keychain cannot be inspected) — the allowance is *temporarily unverifiable*: the
-  card is hidden, commits and Clear History are refused, and **nothing is written**, so no cooldown
-  timestamp is fabricated. A later read resolves the identity: `absent` initializes normally,
-  `present` runs the detection-time repair, and `unknown` keeps failing closed.
+  card is hidden, recovery commits are refused, and **nothing is written**, so no cooldown
+  timestamp is fabricated. Clear History still runs (with no ledger, no proving row and no trusted
+  floor there is nothing to refund) but writes no timestamp, so the allowance stays unverifiable.
+  A later read resolves the identity: `absent` initializes normally, `present` runs the
+  detection-time repair, and `unknown` keeps failing closed.
 
 **Clear and retention.** Clear writes/seals the floor before it deletes rows (so a clear cannot
 refund), and the hard-cap/retention path refuses to prune while the allowance evidence cannot be

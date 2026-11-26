@@ -383,13 +383,18 @@ public final class FlintHistoryStore: @unchecked Sendable {
             // The allowance must be durable before the rows that prove it are deleted. An
             // unverifiable allowance is never cleared into a refund.
             let ledger = reconcileLedger(events: loaded.lines.compactMap(\.event))
-            guard ledger.trusted else { return false }
             let eventsFloor = StreakRecoveryPolicy.lastSuccessfulRecoveryAt(
                 events: loaded.lines.compactMap(\.event))
+            // Refuse to delete rows when an allowance exists but cannot be authenticated. With
+            // no ledger file, no proving row and no trusted floor, nothing can be refunded: the
+            // clear proceeds and writes no timestamp, so the allowance stays untrusted.
+            if !ledger.trusted, ledger.floor != nil || eventsFloor != nil { return false }
             let proved = max(ledger.floor ?? Int64.min, eventsFloor ?? Int64.min)
-            // A degraded store with no provable floor restarts the cooldown instead of refunding.
+            // A degraded store with no provable floor restarts the cooldown instead of
+            // refunding, but only when the ledger can be durably sealed.
             let floor: Int64? = proved != Int64.min ? proved
-                : (metadata.degraded == true ? FlintHistoryEvent.milliseconds(clock()) : nil)
+                : (ledger.trusted && metadata.degraded == true
+                    ? FlintHistoryEvent.milliseconds(clock()) : nil)
             if let floor {
                 do {
                     try writeLedger(floor, replacing: readLedger())

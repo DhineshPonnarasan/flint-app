@@ -585,9 +585,12 @@ final class RecoveryLedgerTests: XCTestCase {
         }
         XCTAssertEqual(reason, "allowance_unreadable")
         XCTAssertEqual(recoveredIDs(unknown), [])
-        XCTAssertFalse(unknown.clear(keepingRunningSession: nil),
-                       "clear must not treat an unverifiable allowance as unused")
+        // Clear History is not an allowance operation. With no ledger, no proving row and no
+        // trusted floor there is nothing to refund, so it proceeds and writes no timestamp;
+        // the allowance stays unverifiable until the identity resolves.
+        XCTAssertTrue(unknown.clear(keepingRunningSession: nil))
         XCTAssertFalse(FileManager.default.fileExists(atPath: ledgerURL(directory).path))
+        XCTAssertFalse(unknown.read().allowanceTrusted)
     }
 
     func testUnknownKeyMaterialResolvingToAbsentInitializesNormally() throws {

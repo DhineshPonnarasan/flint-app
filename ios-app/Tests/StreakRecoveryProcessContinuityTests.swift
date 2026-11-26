@@ -17,6 +17,10 @@ final class StreakRecoveryProcessContinuityTests: XCTestCase {
         return c
     }
     private let fingerprint = "v1|test|instagram"
+    /// The simulator test runner has no Keychain entitlement; these tests exercise recovery
+    /// continuity, not the ledger's Keychain binding.
+    private let ledgerAuthenticator = HMACRecoveryLedgerAuthenticator(
+        key: Data(repeating: 0x0B, count: 32))
     private var today: Date {
         calendar.date(from: DateComponents(year: 2026, month: 10, day: 28))!
     }
@@ -201,6 +205,7 @@ final class StreakRecoveryProcessContinuityTests: XCTestCase {
         var clockNow = calendar.date(byAdding: .day, value: -40, to: today)!
         let store = FlintHistoryStore(
             directory: directory, clock: { clockNow }, calendar: calendar, isHost: true,
+            ledgerAuthenticator: ledgerAuthenticator,
             liveSelectionFingerprint: { self.fingerprint })
         _ = store.read()
         clockNow = calendar.date(byAdding: .hour, value: 18, to: today)!
