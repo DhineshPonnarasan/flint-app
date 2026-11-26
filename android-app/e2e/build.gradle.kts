@@ -27,6 +27,8 @@ android {
         java.srcDir("../app/src/sharedTest/kotlin")
     }
     compileOptions {
+        // core-history is desugared; a test module that links it must be too.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -34,6 +36,8 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring(libs.android.desugar.jdk)
+    implementation(project(":core:core-history"))
     implementation(libs.androidx.junit)
     implementation("androidx.test:runner:1.7.0")
     implementation("androidx.test.uiautomator:uiautomator:2.4.0")

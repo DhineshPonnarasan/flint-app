@@ -45,6 +45,8 @@ data class FocusDay(
     val endedEarly: Int = 0,
     val inProgress: Boolean = false,
     val unconfirmed: Int = 0,
+    /** A streak_recovered bridge covers this day; it is not a normal completed session. */
+    val recovered: Boolean = false,
 )
 data class FocusSummary(
     val availability: HistoryAvailability,
@@ -59,6 +61,11 @@ data class FocusSummary(
      * because retention/historyStart mean this is not an all-time claim.
      */
     val bestRecordedStreak: Int = 0,
+    /**
+     * True when a pruned-history checkpoint exists but failed integrity verification. The value
+     * above is then only the retained-history best and the UI must say so.
+     */
+    val bestCheckpointUnverified: Boolean = false,
 )
 
 object FocusHistoryAggregator {
@@ -100,6 +107,10 @@ object FocusHistoryAggregator {
             .groupingBy { date(it.end, zone) }.eachCount()
         val unconfirmed = sessions.filter { it.outcome == SessionOutcome.UNCONFIRMED }
             .groupingBy { date(it.end, zone) }.eachCount()
+        val today = date(now, zone)
+        // Recovery bridges are separate events; they contribute a recovered day, never a
+        // fabricated completed session or chart completion.
+        val recovered = StreakRecoveryPolicy.recoveredDays(snapshot.events, zone, startDate)
         val days = generateSequence(from) { it.plusDays(1) }.takeWhile { it <= through }.map { day ->
             if (day < startDate) FocusDay(day, null) else FocusDay(
                 day, if (sessions.any { it.uncertainGaps.isNotEmpty() }) FocusHistoryBounds.lowerBound(sessions,
@@ -108,9 +119,9 @@ object FocusHistoryAggregator {
                 completed[day] ?: 0, ended[day] ?: 0,
                 sessions.any { s -> s.outcome == SessionOutcome.RUNNING && date(s.start, zone) <= day && date(now, zone) >= day },
                 unconfirmed[day] ?: 0,
+                recovered = day in recovered,
             )
         }.toList()
-        val today = date(now, zone)
         // Streak attribution uses the civil day recorded on each terminal event. A completion
         // recorded in a zone ahead of the device can name tomorrow, so the current streak
         // anchors on tomorrow only when that day was actually recorded; corrupt or far-future
@@ -120,11 +131,19 @@ object FocusHistoryAggregator {
             .filter { it.outcome == SessionOutcome.COMPLETED }
             .map { session -> recordedDay(session, zone) }
             .toSet()
+        val streakDays = recordedDays + recovered
         val tomorrow = today.plusDays(1)
-        val referenceToday = if (tomorrow in recordedDays) tomorrow else today
-        val streak = currentStreak(recordedDays, referenceToday, startDate)
-        val best = maxOf(streak, bestRecordedStreak(recordedDays, startDate))
-        return FocusSummary(availability, sessions, days, streak, bestRecordedStreak = best)
+        val referenceToday = if (tomorrow in streakDays) tomorrow else today
+        val streak = HistoryBestStreak.currentStreak(
+            streakDays, referenceToday, startDate, snapshot.bestCheckpoint,
+        )
+        val best = maxOf(
+            streak,
+            bestRecordedStreak(streakDays, startDate),
+            snapshot.bestCheckpoint.bestWith(streakDays, startDate),
+        )
+        return FocusSummary(availability, sessions, days, streak, bestRecordedStreak = best,
+            bestCheckpointUnverified = snapshot.bestCheckpointUnverified)
     }
 
     /**

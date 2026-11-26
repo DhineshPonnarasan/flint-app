@@ -8,7 +8,7 @@ object HistoryCodec {
         "session" to event.session, "at" to event.at, "tz" to event.tz,
     ).apply {
         if (event.inferred) put("inferred", true)
-        if (event.knownType in setOf(HistoryEventType.STARTED, HistoryEventType.RESCHEDULED)) put("plannedEnd", event.plannedEnd)
+        if (event.knownType in setOf(HistoryEventType.STARTED, HistoryEventType.RESCHEDULED, HistoryEventType.STREAK_RECOVERED)) put("plannedEnd", event.plannedEnd)
         event.tier?.let { put("tier", it) }
         event.source?.let { put("source", it) }
         event.name?.let { put("name", it.take(64)) }
@@ -76,6 +76,16 @@ object HistoryCodec {
                 require(event.source != null && event.name != null && event.name.length <= 64)
             }
             HistoryEventType.RESCHEDULED -> require(fields.containsKey("plannedEnd"))
+            HistoryEventType.STREAK_RECOVERED -> {
+                require(fields.containsKey("plannedEnd") && event.plannedEnd != null)
+                require(event.breakEnd != null)
+                require(event.recoveryEnd != null)
+                require(event.reason == StreakRecoveryPolicy.REASON)
+                require(event.originRoute == StreakRecoveryPolicy.ORIGIN)
+                require(!event.grant.isNullOrBlank())
+                require(!event.sessions.isNullOrEmpty())
+                require(!event.source.isNullOrBlank())
+            }
             HistoryEventType.ENDED_EARLY -> require(event.route != null)
             HistoryEventType.SUPERSEDED -> require(event.by != null)
             HistoryEventType.BREAK_STARTED -> require(event.breakEnd != null)

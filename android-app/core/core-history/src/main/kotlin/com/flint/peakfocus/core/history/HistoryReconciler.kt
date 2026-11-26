@@ -44,6 +44,13 @@ class HistoryReconciler(
     // Read again under the history transaction lock: a queued observation may be
     // stale after clear, a clock edit, or the owner's natural terminal transition.
     private val authoritativeSnapshot: (() -> HistoryRulesSnapshot)? = null,
+    /**
+     * Recovery-challenge binding. While a freeze is active and the established protection still
+     * matches it, this returns the frozen fingerprint, which is stamped on each session's
+     * `started.grant`. That durable row is the only evidence recovery credit accepts, so a
+     * picker edit after the session began cannot retroactively qualify the time.
+     */
+    private val recoveryGrant: () -> String? = { null },
 ) {
     private var firstSuccessfulSnapshot = true
     private val observationMutex = Mutex()
@@ -183,7 +190,14 @@ class HistoryReconciler(
     }
 
     private fun event(type: HistoryEventType, id: String, at: Long) =
-        HistoryEvent(type = type.wireName, session = id, at = at, tz = zone().id)
+        HistoryEvent(
+            type = type.wireName,
+            session = id,
+            at = at,
+            tz = zone().id,
+            // Only a start records the protection it began under; terminal rows never carry it.
+            grant = if (type == HistoryEventType.STARTED) recoveryGrant() else null,
+        )
 
     private companion object {
         // Existing Timer titles are the only persisted preset discriminator. Unknown titles

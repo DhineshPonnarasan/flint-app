@@ -1,6 +1,7 @@
 package com.flint.peakfocus
 
 import android.content.Context
+import com.flint.peakfocus.blocking.accessibility.ServiceLiveness
 import com.flint.peakfocus.blocking.overlay.BlockEventHooks
 import com.flint.peakfocus.core.datastore.EditorTerminalDeliveryHealth
 import com.flint.peakfocus.core.datastore.FlintPreferences
@@ -14,7 +15,10 @@ import kotlinx.coroutines.launch
 internal object FocusHistoryEventAdapter {
     private var listener: FocusHistoryHookListener? = null
     @Synchronized fun start(context: Context, scope: CoroutineScope) {
-        FocusHistoryBridge.start(context, scope)
+        val app = context.applicationContext
+        // Real service liveness, not the accessibility Settings toggle: a service that is
+        // enabled but not beating cannot prove enforcement.
+        FocusHistoryBridge.start(app, scope, enforcementProbe = { ServiceLiveness.isFresh() })
         if (listener != null) return
         ProtectionHistoryEventAdapter.start(context, scope)
         listener = FocusHistoryHookListener().also(BlockEventHooks::register)

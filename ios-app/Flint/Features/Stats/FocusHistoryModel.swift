@@ -12,6 +12,13 @@ final class FocusHistoryModel: ObservableObject {
     }()
 
     @Published private(set) var summary: FlintHistorySummary?
+    /// Raw durable events for the last read, so policy/UI never re-read unrelated state.
+    @Published private(set) var snapshotEvents: [FlintHistoryEvent] = []
+    @Published private(set) var historyStart: Date?
+    /// Authenticated allowance floor from the last read; nil before any recovery.
+    @Published private(set) var recoveryFloorAt: Int64?
+    /// False when the allowance evidence cannot be authenticated: never offer recovery then.
+    @Published private(set) var allowanceTrusted = true
     let isPreview: Bool
     let presentsCompletions: Bool
     let acknowledgementKey: String
@@ -53,6 +60,10 @@ final class FocusHistoryModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.summary = summary
+                self.snapshotEvents = snapshot.events
+                self.historyStart = snapshot.historyStart
+                self.recoveryFloorAt = snapshot.recoveryFloorAt
+                self.allowanceTrusted = snapshot.allowanceTrusted
                 completion?(summary)
             }
         }

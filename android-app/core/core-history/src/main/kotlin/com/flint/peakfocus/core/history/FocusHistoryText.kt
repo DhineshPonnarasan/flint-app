@@ -4,7 +4,7 @@ import android.content.res.Resources
 import java.time.format.DateTimeFormatter
 
 object FocusHistoryText {
-    const val DEFINITION = "Timer focus sessions are counted; schedules and limits aren't counted. Calendar days use this device's current time zone."
+    const val DEFINITION = "Timer focus sessions are counted; schedules and limits aren't counted. Streak days use each session's recorded timezone; the chart follows this device's current timezone."
     fun duration(milliseconds: Long): String {
         val minutes = milliseconds.coerceAtLeast(0) / 60_000
         return when {

@@ -6,11 +6,14 @@ public enum FlintHistoryEventType: Equatable, Sendable, Codable {
     case started, completed, endedEarly, superseded, breakStarted, breakEnded
     case passUsed, failedToArm, rescheduled, openIntercepted
     case protectionDegraded, protectionRestored, accessStarted, accessEnded
+    /// Continuity bridge for streak recovery (policy v1). Not a session terminal.
+    case streakRecovered
     case unknown(String)
 
     static let knownTypes: [Self] = [.started, .completed, .endedEarly, .superseded, .breakStarted,
                                     .breakEnded, .passUsed, .failedToArm, .rescheduled, .openIntercepted,
-                                    .protectionDegraded, .protectionRestored, .accessStarted, .accessEnded]
+                                    .protectionDegraded, .protectionRestored, .accessStarted, .accessEnded,
+                                    .streakRecovered]
 
     public var wireName: String {
         switch self {
@@ -28,6 +31,7 @@ public enum FlintHistoryEventType: Equatable, Sendable, Codable {
         case .accessStarted: return "access_started"
         case .accessEnded: return "access_ended"
         case .openIntercepted: return "open_intercepted"
+        case .streakRecovered: return "streak_recovered"
         case .unknown(let name): return name
         }
     }
@@ -108,6 +112,11 @@ public struct FlintHistoryEvent: Codable, Equatable, Sendable, Identifiable {
     public var isSupported: Bool {
         guard v == 1, !session.isEmpty else { return false }
         if case .unknown = type { return false }
+        // A recovery bridge must satisfy the full policy schema before it may be read at all:
+        // a truncated row can neither credit a day nor spend the allowance.
+        if type == .streakRecovered, !StreakRecoveryPolicy.isWellFormedRecovery(self) {
+            return false
+        }
         let validTimes = [at, plannedEnd, breakEnd, observedAt, recoveryEnd].compactMap({ $0 }).allSatisfy {
             $0 >= -62_135_596_800_000 && $0 <= 253_402_300_799_000
         }

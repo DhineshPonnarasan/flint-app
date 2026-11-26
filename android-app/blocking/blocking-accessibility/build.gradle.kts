@@ -8,6 +8,8 @@ android {
     compileSdk = 35
     defaultConfig { minSdk = 23 }
     compileOptions {
+        // The service uses java.time; the module must desugar like the app and core-history.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -16,6 +18,7 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring(libs.android.desugar.jdk)
     implementation(project(":core:core-model"))
     implementation(project(":core:core-data"))
     implementation(project(":core:core-datastore")) // shared trusted reset clock

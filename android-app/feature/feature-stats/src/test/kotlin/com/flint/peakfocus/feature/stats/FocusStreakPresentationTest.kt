@@ -154,6 +154,25 @@ class FocusStreakPresentationTest {
     private fun week(focusedMs: Long?): List<FocusDay> =
         (0L..6L).map { FocusDay(today.minusDays(6 - it), focusedMs) }
 
+    @Test fun unverifiedCheckpointMarksBestAsRecentOnly() {
+        val days = week(0).mapIndexed { index, day ->
+            if (index == 6) day.copy(completed = 1) else day
+        }
+        val summary = FocusSummary(
+            availability = HistoryAvailability.VALUE,
+            sessions = emptyList(),
+            days = days,
+            streak = 1,
+            bestRecordedStreak = 12,
+            bestCheckpointUnverified = true,
+        )
+        val ui = focusStreakUi(summary, locale) as FocusStreakUi.Visible
+        assertTrue(
+            "a degraded checkpoint must not read as an all-time best",
+            ui.bestCaption!!.contains("recent history", ignoreCase = true),
+        )
+    }
+
     private fun activeSummary(streak: Int, completedToday: Boolean): FocusSummary {
         val days = week(0).toMutableList()
         val completedDays = streak

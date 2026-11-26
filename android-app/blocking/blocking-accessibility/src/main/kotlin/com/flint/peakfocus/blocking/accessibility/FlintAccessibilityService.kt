@@ -114,12 +114,20 @@ class FlintAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         releaseDetection()
+        ServiceLiveness.onConnected()
         // Boot/recovery marker: proves the OS rebound the service. Info level so it
         // survives default logcat filters; no PII, just the in-memory rule count.
         android.util.Log.i("FlintBoot", "accessibility connected rules=${ActiveRulesHolder.rules.size}")
         BlocklistStore(this).load()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         serviceScope = scope
+        // In-memory liveness only: no event content, no disk writes, and it dies with the scope.
+        scope.launch {
+            while (true) {
+                ServiceLiveness.beat()
+                delay(HEARTBEAT_INTERVAL_MS)
+            }
+        }
         timeForeground = TimeLimitForegroundSession.create(this, TimeLimitForegroundSession.Path.A)
         urlThrottle = UrlReadThrottle(
             nowMs = SystemClock::uptimeMillis,
@@ -522,7 +530,12 @@ class FlintAccessibilityService : AccessibilityService() {
         lastForegroundUrl = null
     }
 
-    override fun onInterrupt() = Unit
+    override fun onInterrupt() {
+        // The system has interrupted this service's feedback, so it can no longer prove that
+        // enforcement is live. Fail closed immediately; a later onServiceConnected re-arms it.
+        ServiceLiveness.onDisconnected()
+        releaseDetection()
+    }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         releaseDetection()
@@ -539,6 +552,8 @@ class FlintAccessibilityService : AccessibilityService() {
         // The disconnect used to run last, so a throwing teardown could leave a ghost
         // "connected" Path A that parked Path B in standby with zero enforcement.
         EnforcementSignals.detectors.disconnected(this)
+        // No live instance can prove enforcement from here on.
+        ServiceLiveness.onDisconnected()
         timeForeground?.close()
         timeForeground = null
         clearBrowserWindow()
@@ -569,5 +584,7 @@ class FlintAccessibilityService : AccessibilityService() {
     private companion object {
         // Requests midnight/recovery without inventing a future exhaustion deadline.
         const val TIME_OBSERVATION_CADENCE_MS = 15_000L
+        /** In-memory liveness beat; three misses void an active challenge. */
+        const val HEARTBEAT_INTERVAL_MS = 30_000L
     }
 }

@@ -313,6 +313,33 @@ final class FlintHistoryStreakLifecycleTests: XCTestCase {
         XCTAssertEqual(summary.bestRecordedStreak, 3)
     }
 
+    /// Acceptance matrix §B: Day 1 → Day 2 → Day 3 with a real reopen after each day.
+    /// Companion: Android `FocusStreakSequentialPersistenceTest`.
+    func testSequentialDay1Day2Day3SurviveEachReopen() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let early = ny.date(byAdding: .day, value: -40, to: todayNoon)!
+        _ = FlintHistoryStore(directory: directory, clock: { early }, calendar: ny).read()
+
+        for dayOffset in [-2, -1, 0] {
+            let dayNow = at(dayOffset: dayOffset, hour: 12)
+            let writer = FlintHistoryStore(directory: directory, clock: { dayNow }, calendar: ny)
+            XCTAssertTrue(writer.append(started(dayOffset: dayOffset, id: "day\(dayOffset)")))
+            XCTAssertTrue(writer.append(completed(dayOffset: dayOffset, id: "day\(dayOffset)")))
+
+            let evening = at(dayOffset: dayOffset, hour: 18)
+            let snap = FlintHistoryStore(directory: directory, clock: { evening }, calendar: ny).read()
+            let expected = dayOffset + 3 // -2 → 1, -1 → 2, 0 → 3
+            let summary = FlintHistoryAggregator.summarize(snap, activeSessionID: nil,
+                                                           now: evening, calendar: ny)
+            XCTAssertEqual(summary.streak, expected,
+                           "streak after dayOffset \(dayOffset) must survive reopen")
+            XCTAssertEqual(summary.bestRecordedStreak, expected)
+            XCTAssertEqual(snap.events.filter { $0.type == .completed }.count, expected)
+        }
+    }
+
     func testS20_uncertainHistoryDoesNotInventStreak() {
         let started = started(dayOffset: 0, timeConfidence: .uncertain(reason: "clock_discontinuity"))
         let result = summarize([started, completed(dayOffset: 0)])

@@ -54,12 +54,15 @@ public struct FlintHistoryDay: Equatable, Sendable, Identifiable {
     public var endedEarly = 0
     public var inProgress = false
     public var unconfirmed = 0
+    /// A missed day bridged by a durable recovery row. Never a fabricated completion.
+    public var recovered = false
 
     public init(start: Date, focusedSeconds: TimeInterval?, completed: Int = 0, endedEarly: Int = 0,
-                inProgress: Bool = false, unconfirmed: Int = 0) {
+                inProgress: Bool = false, unconfirmed: Int = 0, recovered: Bool = false) {
         self.start = start; self.focusedSeconds = focusedSeconds; self.completed = completed
         self.endedEarly = endedEarly; self.inProgress = inProgress
         self.unconfirmed = unconfirmed
+        self.recovered = recovered
     }
 }
 
@@ -115,19 +118,28 @@ public enum FlintHistoryAggregator {
         let recordedDays = Set(sessions.filter { $0.outcome == .completed }.compactMap {
             committedDay(for: $0.endedAt, timeZone: $0.recordedTimeZone, calendar: calendar)
         })
+        // A successful recovery bridges exactly one missed day, so recovered days join the streak
+        // day set without inventing a completion. The bridge row's own recorded zone fixes its day.
+        let recoveredDays = StreakRecoveryPolicy.recoveredDays(
+            events: snapshot.events, historyStart: snapshot.historyStart, calendar: calendar)
+        let bearingDays = StreakRecoveryPolicy.streakDays(completed: recordedDays,
+                                                          recovered: recoveredDays)
         // A completion recorded in a zone ahead of the device can name tomorrow. Anchor the
         // current streak on tomorrow only when that day was actually recorded; corrupt or
         // far-future recorded days are ignored so the usual today/yesterday grace still
         // applies, and best streak keeps every distinct recorded day.
         let referenceToday: Date = {
             guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: today),
-                  recordedDays.contains(tomorrow) else { return today }
+                  bearingDays.contains(tomorrow) else { return today }
             return tomorrow
         }()
-        let streak = currentStreak(completedDays: recordedDays, today: referenceToday,
+        let streak = currentStreak(completedDays: bearingDays, today: referenceToday,
                                    historyStart: historyDay, calendar: calendar)
-        let best = max(streak, bestRecordedStreak(completedDays: recordedDays,
+        let best = max(streak, bestRecordedStreak(completedDays: bearingDays,
                                                   historyStart: historyDay, calendar: calendar))
+        for index in days.indices {
+            days[index].recovered = recoveredDays.contains(days[index].start)
+        }
         return .init(availability: snapshot.availability, sessions: sessions, days: days,
                      streak: streak, bestRecordedStreak: best)
     }

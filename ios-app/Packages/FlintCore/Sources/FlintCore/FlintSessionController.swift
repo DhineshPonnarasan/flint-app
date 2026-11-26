@@ -30,6 +30,9 @@ public enum FlintSessionError: Error, LocalizedError, Equatable {
     case replacementWaiting(remaining: TimeInterval)
     /// Protection state couldn't be read, so no weakening is allowed (ADR-012 §8).
     case protectionStateUnavailable
+    /// A streak-recovery challenge is bound and this start would break or bypass its frozen
+    /// Screen Time selection. Recovery credit pauses until the challenge ends or is re-bound.
+    case recoveryProtectionInactive
     case resumeProtectionFirst
     case focusCycleRequired
     /// A Harder wait has passed, but a background request (Shortcut, Focus) never completes it:
@@ -70,6 +73,9 @@ public enum FlintSessionError: Error, LocalizedError, Equatable {
             return "The running session is Harder: wait \(Self.minutesText(remaining)), then ask again to replace it."
         case .protectionStateUnavailable:
             return "Flint couldn't read its protection state, so nothing was changed. Open Flint to check."
+        case .recoveryProtectionInactive:
+            return "A streak recovery is in progress and these apps are locked for it. "
+                + "Change the selection back, or finish the recovery challenge in Flint."
         case .resumeProtectionFirst:
             return "Resume protection first. Emergency Pass recovery is active; open Flint to resume protection now."
         case .focusCycleRequired:
@@ -413,6 +419,38 @@ public struct FlintSessionReconcileReport: Equatable, Sendable {
 /// and registration exist. Each registration gets a unique activity name, so a late callback
 /// for a replaced session can't end the new one.
 public final class FlintSessionController {
+
+    /// Central start gate for a bound streak-recovery challenge.
+    ///
+    /// No freeze means no challenge, so the gate is a no-op. A freeze refuses a start whose
+    /// selection is not the frozen one, whose Screen Time authorization was revoked, or whose
+    /// binding was made by another process. Every refusal durably latches enforcement as broken,
+    /// so reconnecting authorization — or a same-day rebind — cannot quietly re-enable credit.
+    public static func enforceRecoverySelectionGate(
+        selectionFingerprint: String,
+        authorizationApproved: Bool,
+        guardStore: RecoveryChallengeGuardStore,
+        calendar: Calendar
+    ) throws {
+        guard let freeze = guardStore.current() else { return }
+        switch StreakRecoveryProtection.SelectionGate.evaluate(
+            freeze: freeze,
+            selectionFingerprint: selectionFingerprint,
+            authorizationApproved: authorizationApproved,
+            requireFreeze: true
+        ) {
+        case .allow:
+            // The gate can allow a start while continuity is unproven (another process bound the
+            // freeze). Refuse and latch rather than credit time nobody could have enforced.
+            guard guardStore.isEnforcementIntact() else {
+                guardStore.markEnforcementBroken()
+                throw FlintSessionError.recoveryProtectionInactive
+            }
+        case .refuse:
+            guardStore.markEnforcementBroken()
+            throw FlintSessionError.recoveryProtectionInactive
+        }
+    }
 
     /// Prefix of every session activity name; also the exact name older builds registered.
     public static let monitorName = "flint.session"
@@ -854,6 +892,20 @@ public final class FlintSessionController {
         // website picks cannot be expressed as exceptions, so they are dropped before anything
         // is measured or written.
         let sessionTargets = allowList ? Self.applicationOnly(selection) : selection
+        // A live, uninterrupted recovery challenge freezes the day's (block-list) Screen Time
+        // selection. Starting under a different one would run an uncredited session, so refuse
+        // instead of pretending it counts. A broken or restarted freeze already blocks credit at
+        // commit, so it must not also block every start for the rest of the day; Allow List
+        // sessions are a different, stricter mode and simply earn no credit.
+        let recoveryGuard = RecoveryChallengeGuardStore()
+        if !allowList, recoveryGuard.isEnforcementIntact() {
+            try Self.enforceRecoverySelectionGate(
+                selectionFingerprint: env.shield.fingerprint(of: sessionTargets),
+                authorizationApproved: true, // `env.isAuthorized()` already passed above
+                guardStore: recoveryGuard,
+                calendar: .current
+            )
+        }
         if allowList {
             switch FlintSelectionValidation.issue(for: sessionTargets, context: .allowList) {
             case .emptyAllowList?: throw FlintSessionError.emptyAllowList
@@ -1118,6 +1170,12 @@ public final class FlintSessionController {
         // Today's picker default stays the block-list selection: an Allow List session's
         // exceptions must never become what the next ordinary session blocks.
         if !allowList { store.saveSelection(sessionTargets) }
+        // Recovery credit: record that this session started under the frozen selection. The
+        // commit path still accepts only the durable `grant` row the history sink writes.
+        RecoveryChallengeGuardStore().qualify(
+            sessionID: session.id,
+            fingerprint: env.shield.fingerprint(of: sessionTargets)
+        )
         guard store.loadActiveSession() == session else { throw FlintSessionError.protectionStateUnavailable }
 
         // 3. Apply before retiring the previous dependable end. If the host dies here, the
@@ -1974,15 +2032,9 @@ final class LiveSessionShield: FlintSessionShielding {
     }
 
     func fingerprint(of selection: FamilyActivitySelection) -> String {
-        let encoder = JSONEncoder()
-        func encoded<T: Encodable>(_ tokens: Set<T>, _ tag: String) -> [String] {
-            tokens.map { tag + ((try? encoder.encode($0))?.base64EncodedString() ?? "?") }
-        }
-        let parts = (encoded(selection.applicationTokens, "a:") + encoded(selection.categoryTokens, "c:")
-                     + encoded(selection.webDomainTokens, "w:")
-                     + ["entireCategory:\(selection.includeEntireCategory)"]).sorted()
-        let digest = SHA256.hash(data: Data(parts.joined(separator: "\n").utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        // One identity per selection. Recovery credit compares this value against the `grant`
+        // stamped at session start, so the freeze and the shield must never drift apart.
+        StreakRecoveryProtection.fingerprint(of: selection)
     }
 
     func applyBlockList(_ selection: FamilyActivitySelection) throws {

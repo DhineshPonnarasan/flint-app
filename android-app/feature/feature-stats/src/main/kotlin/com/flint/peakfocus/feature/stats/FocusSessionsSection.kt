@@ -72,6 +72,8 @@ import com.flint.peakfocus.core.history.FocusHistoryBridge
 import com.flint.peakfocus.core.history.FocusHistoryText
 import com.flint.peakfocus.core.history.FocusSummary
 import com.flint.peakfocus.core.history.HistoryAvailability
+import com.flint.peakfocus.core.history.StreakRecoveryPolicy
+import com.flint.peakfocus.core.history.StreakRecoveryProtection
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
@@ -103,6 +105,7 @@ internal fun FocusSessionsSection() {
         .collectAsStateWithLifecycle(initialValue = null)
 
     FocusStreakCard(history)
+    StreakRecoveryCard(history)
     Spacer(Modifier.height(FlintSpacing.lg))
     FocusSessionsCard(history)
     Spacer(Modifier.height(FlintSpacing.cardGap))
@@ -226,6 +229,162 @@ internal fun FocusSessionsCard(summary: FocusSummary?) {
                 Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun StreakRecoveryCard(summary: FocusSummary?) {
+    val context = LocalContext.current
+    val snapshot by remember(context) { FocusHistoryBridge.store(context).snapshots }
+        .collectAsStateWithLifecycle()
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    val zone = remember(now) { java.time.ZoneId.systemDefault() }
+    val historyStart = remember(snapshot.historyStart, zone) {
+        if (snapshot.historyStart <= 0L) null
+        else java.time.Instant.ofEpochMilli(snapshot.historyStart).atZone(zone).toLocalDate()
+    }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    val eligibility = remember(summary, snapshot.events, now, zone, historyStart, snapshot.recoveryFloorAt) {
+        if (summary == null || historyStart == null) null
+        else StreakRecoveryPolicy.evaluate(
+            summary.sessions, snapshot.events, now, zone, historyStart,
+            // Degraded history cannot prove the allowance is unused: fail closed.
+            readable = summary.availability == HistoryAvailability.VALUE,
+            recoveryFloorAt = snapshot.recoveryFloorAt,
+        )
+    }
+    val offer = eligibility as? StreakRecoveryPolicy.Eligibility.Offer
+    val inspection = androidx.compose.ui.platform.LocalInspectionMode.current
+    var protection by remember { mutableStateOf<StreakRecoveryProtection.BoundProfile?>(null) }
+    // Durable binding is a side effect, never composition: it writes the challenge freeze to
+    // disk and must not run while a frame is being built (or in a preview).
+    androidx.compose.runtime.LaunchedEffect(offer?.challenge?.recoveryDay, inspection) {
+        val challenge = offer?.challenge
+        protection = if (challenge == null || inspection) {
+            null
+        } else {
+            val bound = FocusHistoryBridge.bindRecoveryProtectionOnIo(context, challenge)
+            bound.profile ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                FocusHistoryBridge.activeRecoveryProtection(context, challenge.recoveryDay)
+            }
+        }
+    }
+    // Enforcement is a live fact from the real service instance, not the Settings string.
+    val enforcementReady = remember(now) { FocusHistoryBridge.enforcementReady() }
+    val enforcementIntact = remember(now, protection, enforcementReady) {
+        enforcementReady && FocusHistoryBridge.recoveryGuard(context).isEnforcementIntact()
+    }
+    val ui = streakRecoveryUi(
+        summary = summary,
+        events = snapshot.events,
+        now = now,
+        zone = zone,
+        historyStart = historyStart,
+        protection = protection,
+        enforcementIntact = enforcementIntact,
+        recoveryFloorAt = snapshot.recoveryFloorAt,
+        enforcementReady = enforcementReady,
+    )
+    var committing by remember { mutableStateOf(false) }
+    var celebration by remember { mutableStateOf(false) }
+    // A refusal must be visible: the card otherwise sits on "confirming" forever.
+    var recoveryFailure by remember { mutableStateOf<String?>(null) }
+    // Keyed on the rendered offer, not the 1 Hz clock: a rejection must not re-enter the store
+    // lock every second. It retries only when the challenge state itself changes.
+    androidx.compose.runtime.LaunchedEffect(ui, celebration, recoveryFailure) {
+        val offer = ui as? StreakRecoveryUi.Offer ?: return@LaunchedEffect
+        if (!offer.satisfied || committing || celebration || recoveryFailure != null) return@LaunchedEffect
+        committing = true
+        // The bridge re-checks the live service probe, the durable latch and live protection.
+        when (
+            FocusHistoryBridge.tryCommitStreakRecovery(context, zone = zone)
+        ) {
+            is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Success -> celebration = true
+            is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Rejected ->
+                recoveryFailure = StreakRecoveryCopy.CONFIRM_FAILED
+            com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.PersistFailed ->
+                recoveryFailure = StreakRecoveryCopy.PERSIST_FAILED
+        }
+        committing = false
+    }
+    when (ui) {
+        StreakRecoveryUi.Hidden -> Unit
+        is StreakRecoveryUi.Unavailable -> FlintCard(modifier = Modifier.testTag("history.streak.recovery")) {
+            FlintSectionLabel(StreakRecoveryCopy.TITLE, modifier = Modifier.semantics { heading() })
+            Text(
+                ui.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        is StreakRecoveryUi.Offer -> FlintCard(
+            modifier = Modifier
+                .testTag("history.streak.recovery")
+                .semantics { contentDescription = ui.contentDescription },
+        ) {
+            FlintSectionLabel(StreakRecoveryCopy.TITLE, modifier = Modifier.semantics { heading() })
+            Text(StreakRecoveryCopy.required(ui.requiredMinutes), style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Missed ${ui.missedDayLabel}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = FlintSpacing.xs),
+            )
+            Text(
+                ui.protectedAppsLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = FlintSpacing.sm).testTag("history.streak.recovery.apps"),
+            )
+            if (ui.protectionLocked) {
+                Text(
+                    StreakRecoveryCopy.PROTECTION_LOCKED,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = FlintPalette.Mist,
+                    modifier = Modifier.padding(top = FlintSpacing.xs),
+                )
+            }
+            Text(
+                recoveryFailure ?: ui.statusLine,
+                style = MaterialTheme.typography.labelLarge,
+                color = FlintPalette.Ember,
+                modifier = Modifier.padding(top = FlintSpacing.sm),
+            )
+            Text(
+                ui.expiresLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = FlintPalette.Mist,
+                modifier = Modifier.padding(top = FlintSpacing.xs),
+            )
+            Text(
+                StreakRecoveryCopy.TOKEN_FREE,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = FlintSpacing.sm),
+            )
+            Text(
+                StreakRecoveryCopy.FOOTNOTE,
+                style = MaterialTheme.typography.bodySmall,
+                color = FlintPalette.Mist,
+                modifier = Modifier.padding(top = FlintSpacing.xs),
+            )
+        }
+    }
+    if (celebration) {
+        Text(
+            StreakRecoveryCopy.SUCCESS,
+            style = MaterialTheme.typography.bodyMedium,
+            color = FlintPalette.Ember,
+            modifier = Modifier
+                .testTag("history.streak.recovery.success")
+                .padding(top = FlintSpacing.sm)
+                .semantics { contentDescription = StreakRecoveryCopy.SUCCESS },
+        )
     }
 }
 
@@ -406,7 +565,7 @@ private fun FocusStreakVisibleCard(ui: FocusStreakUi.Visible) {
                         .size(if (day.isToday) 9.dp else 7.dp)
                         .background(
                             color = when {
-                                day.kind == FocusStreakDayKind.COMPLETED ->
+                                day.kind == FocusStreakDayKind.COMPLETED || day.kind == FocusStreakDayKind.RECOVERED ->
                                     FlintPalette.Ember.copy(alpha = if (day.isToday) 0.95f else 0.7f)
                                 day.isToday -> FlintPalette.Mist.copy(alpha = 0.55f)
                                 else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)

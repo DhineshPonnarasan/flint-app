@@ -8,7 +8,12 @@ enum class HistoryEventType(val wireName: String, val terminal: Boolean = false)
     SUPERSEDED("superseded", true), BREAK_STARTED("break_started"), BREAK_ENDED("break_ended"),
     PASS_USED("pass_used"), FAILED_TO_ARM("failed_to_arm"), OPEN_INTERCEPTED("open_intercepted"),
     PROTECTION_DEGRADED("protection_degraded"), PROTECTION_RESTORED("protection_restored"),
-    ACCESS_STARTED("access_started"), ACCESS_ENDED("access_ended");
+    ACCESS_STARTED("access_started"), ACCESS_ENDED("access_ended"),
+    /**
+     * Continuity bridge for streak recovery (policy v1). Not a session terminal.
+     * Older readers preserve the line and ignore aggregation until they understand it.
+     */
+    STREAK_RECOVERED("streak_recovered");
 
     companion object {
         fun fromWire(name: String): HistoryEventType? = entries.firstOrNull { it.wireName == name }
@@ -70,4 +75,13 @@ data class HistorySnapshot(
     val diagnostic: String? = null,
     /** Existing persisted clear cutoff; durable consumers inspect it under update's lock. */
     val clearedAt: Long? = null,
+    /** Compaction checkpoint for the historical best; derived from history, never a counter. */
+    val bestCheckpoint: BestStreakCheckpoint = BestStreakCheckpoint(),
+    /**
+     * Durable last-successful-recovery timestamp. It survives Clear History and over-budget
+     * resets, so the 30-day allowance cannot be refunded by deleting session rows.
+     */
+    val recoveryFloorAt: Long? = null,
+    /** A checkpoint exists but failed integrity verification; only the derived best is shown. */
+    val bestCheckpointUnverified: Boolean = false,
 )

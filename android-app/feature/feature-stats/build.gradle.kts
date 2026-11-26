@@ -15,6 +15,7 @@ android {
     compileSdk = 35
     defaultConfig { minSdk = 23 }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -29,6 +30,7 @@ dependencies {
     implementation(project(":core:core-model"))
     implementation(project(":core:core-history"))
     implementation(project(":permissions:permissions-special"))
+    coreLibraryDesugaring(libs.android.desugar.jdk)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.tooling.preview)

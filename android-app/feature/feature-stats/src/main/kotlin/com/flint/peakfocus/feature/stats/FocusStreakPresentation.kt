@@ -11,7 +11,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
 
-internal enum class FocusStreakDayKind { UNAVAILABLE, COMPLETED, INCOMPLETE }
+internal enum class FocusStreakDayKind { UNAVAILABLE, COMPLETED, INCOMPLETE, RECOVERED }
 
 internal data class FocusStreakDayUi(
     val date: LocalDate,
@@ -48,12 +48,16 @@ internal sealed class FocusStreakUi {
 
 internal object FocusStreakCopy {
     const val TITLE = "Focus streak"
-    const val FOOTNOTE = "One completed focus session makes a day count. Days use this device's current time zone."
+    const val FOOTNOTE = "One completed focus session makes a day count. Streak days use the timezone recorded when the session ended."
     const val EMPTY = "Your first focus session starts your streak."
     const val NO_ACTIVE = "No active streak"
     const val RESTART = "A new streak starts with a completed focus session."
     const val COMPLETED_TODAY = "Completed today"
     const val NOT_COMPLETED_TODAY = "Not completed today"
+    const val RECOVERED_DAY = "Recovered focus day"
+    const val RECOVERY_AVAILABLE = "Free streak recovery available"
+    const val RECOVERY_FOOTNOTE =
+        "Complete the recovery challenge today to bridge yesterday. No payment or ads."
     const val WEEK_STRIP = "Focus days this week"
 
     fun daysInARow(streak: Int): String =
@@ -91,12 +95,14 @@ internal fun focusStreakUi(
         val kind = when {
             day.focusedMs == null -> FocusStreakDayKind.UNAVAILABLE
             day.completed > 0 -> FocusStreakDayKind.COMPLETED
+            day.recovered -> FocusStreakDayKind.RECOVERED
             else -> FocusStreakDayKind.INCOMPLETE
         }
         val isToday = day.date == today
         val status = when (kind) {
             FocusStreakDayKind.UNAVAILABLE -> "no data"
             FocusStreakDayKind.COMPLETED -> "completed focus day"
+            FocusStreakDayKind.RECOVERED -> "recovered focus day"
             FocusStreakDayKind.INCOMPLETE -> "no completed focus session"
         }
         val todaySuffix = if (isToday) ", today" else ""
@@ -122,7 +128,9 @@ internal fun focusStreakUi(
         streak = summary.streak,
         streakCaption = if (active) FocusStreakCopy.daysInARow(summary.streak) else FocusStreakCopy.NO_ACTIVE,
         bestRecorded = best,
-        bestCaption = best?.let(FocusStreakCopy::bestRecorded),
+        bestCaption = best?.let(FocusStreakCopy::bestRecorded)?.let { caption ->
+            if (summary.bestCheckpointUnverified) "$caption (recent history only)" else caption
+        },
         weekCompleted = weekCompleted,
         weekCaption = FocusStreakCopy.weekCompleted(weekCompleted),
         days = days,

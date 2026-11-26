@@ -1,5 +1,6 @@
 import SwiftUI
 import FlintCore
+import FamilyControls
 
 /// App-owned focus sessions, laid out as M12's comparison card and week strip.
 /// Screen Time report content remains in its own extension.
@@ -7,6 +8,8 @@ struct FocusHistorySection: View {
     @ObservedObject var history: FocusHistoryModel
     var range: InsightsRange = .week
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var recoveryCelebrated = false
+    @State private var recoveryFailure: String?
 
     private var allDays: [FlintHistoryDay] { history.summary?.days ?? [] }
     private var days: [FlintHistoryDay] {
@@ -41,6 +44,7 @@ struct FocusHistorySection: View {
 
             if StreakPresentationPolicy.showsCard(for: history.summary), let summary = history.summary {
                 streakCard(summary)
+                recoveryCard(summary)
             }
 
             weekSection
@@ -66,6 +70,165 @@ struct FocusHistorySection: View {
             .accessibilityLabel(StreakPresentationPolicy.badgeLabel(for: summary))
         }
         .accessibilityIdentifier("history.streak")
+    }
+
+    // MARK: Recovery
+
+    /// Conditional free recovery: one missed day, one 30-day allowance, grant-bound progress.
+    /// The card binds the freeze (so the day's selection cannot be re-pointed later) and asks the
+    /// durable committer once duration is met and enforcement is live. Success copy appears only
+    /// after the store reports a durable append.
+    @ViewBuilder
+    private func recoveryCard(_ summary: FlintHistorySummary) -> some View {
+        let events = history.snapshotEvents
+        let calendar = Calendar.current
+        let now = Date()
+        let eligibility = StreakRecoveryPolicy.evaluate(
+            sessions: summary.sessions,
+            events: events,
+            now: now,
+            calendar: calendar,
+            historyStart: history.historyStart,
+            // Degraded or unavailable history cannot prove the allowance is unused.
+            readable: summary.availability == .value,
+            recoveryFloorAt: history.recoveryFloorAt,
+            allowanceTrusted: history.allowanceTrusted
+        )
+        let guardStore = RecoveryChallengeGuardStore()
+        // Authorization is a live fact, not a stored one: screens can be revoked mid-challenge.
+        let authorizationApproved: Bool = {
+            #if canImport(FamilyControls) && canImport(ManagedSettings) && canImport(DeviceActivity)
+            return AuthorizationCenter.shared.authorizationStatus == .approved
+            #else
+            return true
+            #endif
+        }()
+        let protection: StreakRecoveryProtection.BoundProfile? = {
+            // A preview must never bind (or read) the real App Group freeze, and an unverifiable
+            // allowance must not freeze a selection for a challenge the commit will refuse.
+            guard !history.isPreview, history.allowanceTrusted,
+                  case .offer(let challenge) = eligibility,
+                  let selection = FlintGroupStore()?.loadSelection() else { return guardStore.current() }
+            return guardStore.ensureFrozen(
+                fingerprint: StreakRecoveryProtection.fingerprint(of: selection),
+                applicationCount: StreakRecoveryProtection.applicationCount(of: selection),
+                allowListMode: false,
+                recoveryDay: challenge.recoveryDay,
+                missedDay: challenge.missedDay,
+                frozenAtMs: FlintHistoryEvent.milliseconds(now)
+            ) ?? guardStore.current()
+        }()
+        let enforcementIntact = guardStore.isEnforcementIntact() && authorizationApproved
+        let ui = StreakRecoveryPresentation.ui(
+            summary: summary,
+            events: events,
+            now: now,
+            calendar: calendar,
+            historyStart: history.historyStart,
+            recoveryFloorAt: history.recoveryFloorAt,
+            allowanceTrusted: history.allowanceTrusted,
+            protection: protection,
+            enforcementIntact: enforcementIntact
+        )
+
+        if recoveryCelebrated {
+            FlintCard(radius: 24, padding: EdgeInsets(top: 18, leading: 16, bottom: 16, trailing: 16)) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(StreakRecoveryPresentation.title)
+                        .font(FlintFont.text(17, weight: .semibold))
+                        .foregroundStyle(FlintBrand.bone)
+                    Text(StreakRecoveryPresentation.success)
+                        .font(FlintFont.text(14))
+                        .foregroundStyle(FlintBrand.ember)
+                }
+            }
+            .accessibilityIdentifier("history.streak.recovery.success")
+        } else {
+            switch ui {
+            case .hidden:
+                EmptyView()
+            case .unavailable(let message):
+                FlintCard(radius: 24, padding: EdgeInsets(top: 18, leading: 16, bottom: 16, trailing: 16)) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(StreakRecoveryPresentation.title)
+                            .font(FlintFont.text(17, weight: .semibold))
+                            .foregroundStyle(FlintBrand.bone)
+                        Text(message)
+                            .font(FlintFont.text(14))
+                            .foregroundStyle(FlintBrand.stone)
+                    }
+                }
+                .accessibilityIdentifier("history.streak.recovery")
+            case .offer(let offer):
+                FlintCard(radius: 24, padding: EdgeInsets(top: 18, leading: 16, bottom: 16, trailing: 16)) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(StreakRecoveryPresentation.title)
+                            .font(FlintFont.text(17, weight: .semibold))
+                            .foregroundStyle(FlintBrand.bone)
+                        Text(StreakRecoveryPresentation.required(offer.requiredMinutes))
+                            .font(FlintFont.text(15))
+                            .foregroundStyle(FlintBrand.mist)
+                        Text("Missed \(offer.missedLabel)")
+                            .font(FlintFont.text(13))
+                            .foregroundStyle(FlintBrand.stone)
+                        Text(offer.protectedAppsLabel)
+                            .font(FlintFont.text(13))
+                            .foregroundStyle(FlintBrand.stone)
+                            .accessibilityIdentifier("history.streak.recovery.apps")
+                        if enforcementIntact {
+                            Text(StreakRecoveryPresentation.protectionLocked)
+                                .font(FlintFont.text(12))
+                                .foregroundStyle(FlintBrand.stone)
+                        }
+                        Text(recoveryFailure ?? offer.statusLine)
+                            .font(FlintFont.text(14, weight: .semibold))
+                            .foregroundStyle(FlintBrand.ember)
+                        Text(offer.expiresLabel)
+                            .font(FlintFont.text(12))
+                            .foregroundStyle(FlintBrand.stone)
+                        Text(StreakRecoveryPresentation.tokenFree)
+                            .font(FlintFont.text(12))
+                            .foregroundStyle(FlintBrand.stone)
+                        Text(StreakRecoveryPresentation.footnote)
+                            .font(FlintFont.text(12))
+                            .foregroundStyle(FlintBrand.stone)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(offer.accessibilityLabel)
+                .accessibilityIdentifier("history.streak.recovery")
+                .task(id: offer.satisfied) {
+                    guard offer.satisfied, !recoveryCelebrated, !history.isPreview else { return }
+                    recoveryFailure = nil
+                    let result = StreakRecoveryCommitter.tryCommit(
+                        store: FlintHistoryStore.shared,
+                        calendar: calendar,
+                        activeSessionID: nil,
+                        protection: protection,
+                        protectionActive: enforcementIntact
+                    )
+                    switch result {
+                    case .success:
+                        recoveryCelebrated = true
+                        if let recoveryDay = protection?.recoveryDay {
+                            guardStore.clearIfDay(recoveryDay, calendar: calendar)
+                        }
+                        history.refresh()
+                    case .rejected, .persistFailed:
+                        // Never leave "confirming" on screen after a refusal: silence would read
+                        // as a successful recovery that simply never appears.
+                        recoveryFailure = "Recovery couldn’t be confirmed. Nothing changed — your streak stays as it is."
+                    }
+                }
+                .task(id: authorizationApproved) {
+                    // Losing Screen Time authorization during a bound challenge voids the day:
+                    // reconnecting is not proof the gap was ever enforced.
+                    guard !authorizationApproved, !history.isPreview, protection != nil else { return }
+                    guardStore.markEnforcementBroken()
+                    recoveryFailure = StreakRecoveryPresentation.protectionDegraded
+                }
+            }
+        }
     }
 
     // MARK: Sentence
