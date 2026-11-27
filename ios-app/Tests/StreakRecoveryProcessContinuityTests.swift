@@ -333,7 +333,7 @@ final class StreakRecoveryProcessContinuityTests: XCTestCase {
         let day = calendar.startOfDay(for: today)
         let legacy = StreakRecoveryProtection.BoundProfile(
             fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
-            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            recoveryDay: day, missedDay: day.addingTimeInterval(-86_400),
             frozenAtMs: 0, qualifiedSessionIds: [], enforcementBroken: true,
             watchGeneration: RecoveryChallengeGuardStore.currentProcessGeneration)
 
@@ -349,7 +349,7 @@ final class StreakRecoveryProcessContinuityTests: XCTestCase {
         XCTAssertNil(decoded.recoveryDayKey)
         let rebound = store.ensureFrozen(
             fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
-            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            recoveryDay: day, missedDay: day.addingTimeInterval(-86_400),
             frozenAtMs: 0, calendar: calendar)
         XCTAssertEqual(rebound?.enforcementBroken, true,
                        "a legacy profile must be reused, not replaced")
@@ -365,14 +365,14 @@ final class StreakRecoveryProcessContinuityTests: XCTestCase {
 
         let bound = guardStore.ensureFrozen(
             fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
-            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            recoveryDay: day, missedDay: day.addingTimeInterval(-86_400),
             frozenAtMs: 0, calendar: buddhist)
         XCTAssertNotNil(bound)
         guardStore.markEnforcementBroken()
 
         let rebound = guardStore.ensureFrozen(
             fingerprint: fingerprint, applicationCount: 1, allowListMode: false,
-            recoveryDay: day, missedDay: calendar.startOfDay(for: day(-1)),
+            recoveryDay: day, missedDay: day.addingTimeInterval(-86_400),
             frozenAtMs: 0, calendar: calendar)
         XCTAssertEqual(rebound?.recoveryDay, day)
         XCTAssertEqual(rebound?.enforcementBroken, true)
