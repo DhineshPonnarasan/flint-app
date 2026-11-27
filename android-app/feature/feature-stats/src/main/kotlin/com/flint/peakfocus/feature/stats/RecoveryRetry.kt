@@ -1,8 +1,10 @@
 package com.flint.peakfocus.feature.stats
 
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 /**
  * Bounded retry for the durable protection bind.
@@ -51,7 +53,9 @@ internal sealed interface RecoveryCommitOutcome {
 /**
  * Rejections that may be retried after a meaningful attempt-state change. A race can disappear
  * once the competing write settles; an inactive probe can recover; the store can disagree with
- * the UI until the next durable event lands. Permanent policy answers are not retried.
+ * the UI until the next durable event lands. Permanent policy answers are not retried: in
+ * particular `protection_changed` (the frozen selection was edited) cannot become valid from more
+ * progress, and `protection_mismatch`/`duplicate_id`/`already_recovered` stay latched.
  */
 internal fun recoveryRejectionRetryable(reason: String): Boolean = when (reason) {
     "race_rejected", "protection_inactive", "insufficient_duration" -> true
@@ -63,6 +67,11 @@ internal fun recoveryRejectionRetryable(reason: String): Boolean = when (reason)
  * backoff. A policy rejection is final for this attempt; every failure is surfaced with its
  * retryability so the caller can wait for a new attempt identity instead of re-entering the
  * store lock on unrelated recompositions.
+ *
+ * The durable write itself is shielded from cancellation: an effect whose attempt identity
+ * changes can cancel while the store append is already committed, and losing that outcome would
+ * turn a durable success into a retry that the store correctly rejects (`already_recovered`).
+ * Cancellation is still honored between attempts and during persistence backoff.
  */
 internal object RecoveryCommitAttempt {
     const val MAX_TRANSIENT_RETRIES = 2
@@ -76,7 +85,8 @@ internal object RecoveryCommitAttempt {
         var retries = 0
         while (true) {
             currentCoroutineContext().ensureActive()
-            when (val outcome = commit()) {
+            val outcome = withContext(NonCancellable) { commit() }
+            when (outcome) {
                 RecoveryCommitOutcome.Success -> {
                     onSuccess()
                     return true

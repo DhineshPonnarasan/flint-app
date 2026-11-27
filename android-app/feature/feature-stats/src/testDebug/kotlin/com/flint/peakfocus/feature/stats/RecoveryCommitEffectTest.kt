@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.time.LocalDate
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -98,12 +99,10 @@ class RecoveryCommitEffectTest {
     }
 
     @Test
-    fun transitionDuringAnInFlightCommitQueuesOneRetryWithoutOverlap() {
+    fun attemptChangeDuringCommitPublishesTheDurableSuccess() {
         val state = RecoveryCommitState()
         val attemptState = mutableStateOf(attempt(satisfied = true))
         val calls = AtomicInteger()
-        val active = AtomicInteger()
-        val maxActive = AtomicInteger()
         val started = CompletableDeferred<Unit>()
         val gate = CompletableDeferred<Unit>()
 
@@ -112,6 +111,46 @@ class RecoveryCommitEffectTest {
                 attempt = attemptState.value,
                 state = state,
                 commit = {
+                    calls.incrementAndGet()
+                    started.complete(Unit)
+                    gate.await()
+                    RecoveryCommitOutcome.Success
+                },
+            )
+        }
+
+        compose.waitUntil(5_000) { started.isCompleted }
+        compose.runOnIdle {
+            attemptState.value = attempt(satisfied = true, progressMinutes = 6)
+        }
+        compose.waitForIdle()
+
+        // The attempt changed while the durable write was in flight. If cancellation wins, the
+        // retry sees already_recovered and the success is lost; the committed outcome must win.
+        gate.complete(Unit)
+        compose.waitUntil(5_000) { state.celebrationKey?.challengeId == "challenge-1" }
+
+        assertTrue(state.celebration)
+        assertEquals("a committed write must not be retried", 1, calls.get())
+    }
+
+    @Test
+    fun transitionDuringAnInFlightCommitQueuesOneRetryWithoutOverlap() {
+        val state = RecoveryCommitState()
+        val attemptState = mutableStateOf(attempt(satisfied = true))
+        val calls = AtomicInteger()
+        val active = AtomicInteger()
+        val maxActive = AtomicInteger()
+        val started = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        val lastCommitted = AtomicReference<RecoveryAttempt?>(null)
+
+        compose.setContent {
+            RecoveryCommitEffect(
+                attempt = attemptState.value,
+                state = state,
+                commit = {
+                    lastCommitted.set(attemptState.value)
                     val call = calls.incrementAndGet()
                     val nowActive = active.incrementAndGet()
                     maxActive.updateAndGet { current -> maxOf(current, nowActive) }
@@ -159,6 +198,8 @@ class RecoveryCommitEffectTest {
         assertNull(state.failure)
         assertEquals(2, calls.get())
         assertEquals("queued retry must not overlap the first commit", 1, maxActive.get())
+        assertEquals("the queued retry must use the latest attempt", 8, lastCommitted.get()?.progressMinutes)
+        assertTrue(lastCommitted.get()?.satisfied == true)
     }
 
     @Test

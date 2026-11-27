@@ -124,22 +124,33 @@ object FocusHistoryBridge {
     ): StreakRecoveryCommitter.Result {
         val guard = recoveryGuard(context)
         val protection = guard.current()
-        // Credit requires the frozen protection to still be what is enforced *now*: changing the
+        // Credit requires the frozen protection to still match the live selection: changing the
         // permanent rules or the selection mid-challenge earns nothing, even if the session
         // started while the freeze was intact.
-        val (packages, allowList) = establishedProtectionPackages()
-        val liveMatch = protection != null &&
-            packages.isNotEmpty() &&
-            StreakRecoveryProtection.matches(packages, allowList, protection.fingerprint)
+        val selectionState = ActiveRulesHolder.dataStoreState
+        val selectionReady = selectionState is StorageState.Ready
+        val (packages, allowList) = establishedProtectionPackages(
+            when (selectionState) {
+                is StorageState.Ready -> selectionState.value
+                else -> emptyList()
+            },
+        )
+        // A loading/unavailable rules replica is transient; only a successfully read selection that
+        // differs from the frozen fingerprint is the permanent "earns nothing" case.
+        val selectionMismatch = protection != null && selectionReady &&
+            (packages.isEmpty() ||
+                !StreakRecoveryProtection.matches(packages, allowList, protection.fingerprint))
         return StreakRecoveryCommitter.tryCommit(
             store = store(context),
             zone = zone,
             activeSessionIds = activeSessionIds?.value.orEmpty(),
             protection = protection,
-            // Commit-time enforcement proof: the service must still be live *now*, the durable
-            // latch must be clean, and the frozen protection must still be what is enforced.
+            // Commit-time enforcement proof: the service must still be live *now* and the durable
+            // latch must be clean. An unready selection is transient; a changed selection is a
+            // separate, permanent rejection.
             protectionActive = protectionActive && enforcementProbe() &&
-                guard.isEnforcementIntact() && liveMatch,
+                guard.isEnforcementIntact() && selectionReady,
+            protectionMatchesSelection = !selectionMismatch,
             onCommitted = { protection?.recoveryDay?.let { guard.clearIfDay(it) } },
         )
     }

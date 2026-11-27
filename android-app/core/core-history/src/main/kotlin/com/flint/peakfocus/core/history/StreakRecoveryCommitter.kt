@@ -28,6 +28,9 @@ object StreakRecoveryCommitter {
      * @param protectionActive whether OS enforcement for the freeze is currently live
      * (Accessibility on Android / Screen Time on iOS). False rejects with `protection_inactive`
      * so a mid-challenge permission revoke cannot still award recovery.
+     * @param protectionMatchesSelection whether the current established selection still matches the
+     * frozen fingerprint. False rejects with `protection_changed`, which is permanent for this
+     * challenge: only the user restoring the frozen selection can make the commit valid again.
      */
     suspend fun tryCommit(
         store: FocusHistoryStore,
@@ -37,6 +40,7 @@ object StreakRecoveryCommitter {
         recoveryId: String? = null,
         protection: StreakRecoveryProtection.BoundProfile? = null,
         protectionActive: Boolean = true,
+        protectionMatchesSelection: Boolean = true,
         onCommitted: (() -> Unit)? = null,
     ): Result {
         var built: HistoryEvent? = null
@@ -54,6 +58,13 @@ object StreakRecoveryCommitter {
             }
             if (protection == null || protection.isEmpty) {
                 rejectReason = if (protection == null) "protection_required" else "empty_protection"
+                return@updateRecovery emptyList()
+            }
+            if (!protectionMatchesSelection) {
+                // A replaced/edited freeze cannot become valid by waiting or by earning more
+                // duration; only restoring the frozen selection can. Keep it distinct from a
+                // transient enforcement lapse so the UI does not retry it on every progress tick.
+                rejectReason = "protection_changed"
                 return@updateRecovery emptyList()
             }
             if (!protectionActive) {

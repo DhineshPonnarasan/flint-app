@@ -162,9 +162,31 @@ class StreakRecoveryCommitterTest {
             zone = zone,
             protection = protection(),
             protectionActive = false,
+            protectionMatchesSelection = true,
         )
         assertTrue(result is StreakRecoveryCommitter.Result.Rejected)
         assertEquals("protection_inactive", (result as StreakRecoveryCommitter.Result.Rejected).reason)
+        assertFalse(store.snapshots.value.events.any { it.type == "streak_recovered" })
+        assertTrue(StreakRecoveryPolicy.tokenAvailable(store.snapshots.value.events, store.millis()))
+    }
+
+    @Test fun changedSelectionRejectedAsPermanentWithoutConsuming() = runBlocking {
+        val now = at(today, 18)
+        val clock = MutableClock(now - 40L * 24 * 60 * 60 * 1000, zone)
+        val store = openStore(clock)
+        store.load()
+        clock.nowMs = now
+        seedCompleted(store, "a", today.minusDays(2), 30)
+        seedCompleted(store, "b", today, 40, grant = fingerprint)
+        val result = StreakRecoveryCommitter.tryCommit(
+            store,
+            zone = zone,
+            protection = protection(),
+            protectionActive = true,
+            protectionMatchesSelection = false,
+        )
+        assertTrue(result is StreakRecoveryCommitter.Result.Rejected)
+        assertEquals("protection_changed", (result as StreakRecoveryCommitter.Result.Rejected).reason)
         assertFalse(store.snapshots.value.events.any { it.type == "streak_recovered" })
         assertTrue(StreakRecoveryPolicy.tokenAvailable(store.snapshots.value.events, store.millis()))
     }

@@ -1,5 +1,6 @@
 package com.flint.peakfocus.feature.stats
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -110,11 +111,36 @@ class RecoveryRetryTest {
         assertTrue(job.isCancelled)
     }
 
+    @Test fun commitPublishesSuccessWhenTheCallerIsCancelledMidWrite() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        var successes = 0
+        val job = launch {
+            RecoveryCommitAttempt.run(
+                commit = {
+                    started.complete(Unit)
+                    gate.await()
+                    RecoveryCommitOutcome.Success
+                },
+                onFailure = { _, _ -> },
+                onSuccess = { successes++ },
+            )
+        }
+        runCurrent()
+        assertTrue(started.isCompleted)
+        job.cancel()
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("a durable outcome must survive effect cancellation", 1, successes)
+    }
+
     @Test fun `rejection retryability is explicit`() {
         assertTrue(recoveryRejectionRetryable("race_rejected"))
         assertTrue(recoveryRejectionRetryable("protection_inactive"))
         assertTrue(recoveryRejectionRetryable("insufficient_duration"))
+        assertFalse(recoveryRejectionRetryable("protection_changed"))
         assertFalse(recoveryRejectionRetryable("protection_mismatch"))
         assertFalse(recoveryRejectionRetryable("duplicate_id"))
+        assertFalse(recoveryRejectionRetryable("already_recovered"))
     }
 }
