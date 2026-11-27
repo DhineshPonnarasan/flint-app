@@ -54,9 +54,9 @@ class RecoveryRetryTest {
         val ok = RecoveryCommitAttempt.run(
             commit = {
                 calls++
-                if (calls == 1) RecoveryCommitResult.PERSIST_FAILED else RecoveryCommitResult.SUCCESS
+                if (calls == 1) RecoveryCommitOutcome.PersistFailed else RecoveryCommitOutcome.Success
             },
-            onFailure = { failure = it },
+            onFailure = { message, _ -> failure = message },
             onSuccess = { successes++ },
         )
         assertTrue(ok)
@@ -70,8 +70,8 @@ class RecoveryRetryTest {
         var calls = 0
         var failure: String? = null
         val ok = RecoveryCommitAttempt.run(
-            commit = { calls++; RecoveryCommitResult.REJECTED },
-            onFailure = { failure = it },
+            commit = { calls++; RecoveryCommitOutcome.Rejected(retryable = false) },
+            onFailure = { message, _ -> failure = message },
             onSuccess = { },
         )
         assertFalse(ok)
@@ -83,8 +83,8 @@ class RecoveryRetryTest {
         var calls = 0
         var failure: String? = null
         val ok = RecoveryCommitAttempt.run(
-            commit = { calls++; RecoveryCommitResult.PERSIST_FAILED },
-            onFailure = { failure = it },
+            commit = { calls++; RecoveryCommitOutcome.PersistFailed },
+            onFailure = { message, _ -> failure = message },
             onSuccess = { },
         )
         assertFalse(ok)
@@ -97,8 +97,8 @@ class RecoveryRetryTest {
         var calls = 0
         val job = launch {
             RecoveryCommitAttempt.run(
-                commit = { calls++; RecoveryCommitResult.PERSIST_FAILED },
-                onFailure = { },
+                commit = { calls++; RecoveryCommitOutcome.PersistFailed },
+                onFailure = { _, _ -> },
                 onSuccess = { },
             )
         }
@@ -108,5 +108,13 @@ class RecoveryRetryTest {
         advanceUntilIdle()
         assertEquals(1, calls)
         assertTrue(job.isCancelled)
+    }
+
+    @Test fun `rejection retryability is explicit`() {
+        assertTrue(recoveryRejectionRetryable("race_rejected"))
+        assertTrue(recoveryRejectionRetryable("protection_inactive"))
+        assertTrue(recoveryRejectionRetryable("insufficient_duration"))
+        assertFalse(recoveryRejectionRetryable("protection_mismatch"))
+        assertFalse(recoveryRejectionRetryable("duplicate_id"))
     }
 }

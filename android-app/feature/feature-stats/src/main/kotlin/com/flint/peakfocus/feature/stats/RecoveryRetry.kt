@@ -36,36 +36,57 @@ internal object RecoveryBindRetry {
 }
 
 /** One commit outcome, decoupled from the store's result type so the retry logic is testable. */
-internal enum class RecoveryCommitResult { SUCCESS, REJECTED, PERSIST_FAILED }
+internal sealed interface RecoveryCommitOutcome {
+    data object Success : RecoveryCommitOutcome
+    data object PersistFailed : RecoveryCommitOutcome
+
+    /**
+     * A policy rejection. [retryable] is true only when a genuinely new attempt context (new
+     * evidence, recovered enforcement, or a new offer state) can legitimately change the answer.
+     * Permanent refusals stay latched for the current challenge.
+     */
+    data class Rejected(val retryable: Boolean) : RecoveryCommitOutcome
+}
+
+/**
+ * Rejections that may be retried after a meaningful attempt-state change. A race can disappear
+ * once the competing write settles; an inactive probe can recover; the store can disagree with
+ * the UI until the next durable event lands. Permanent policy answers are not retried.
+ */
+internal fun recoveryRejectionRetryable(reason: String): Boolean = when (reason) {
+    "race_rejected", "protection_inactive", "insufficient_duration" -> true
+    else -> false
+}
 
 /**
  * Runs one recovery commit and retries only transient persistence failures, with bounded
- * backoff. A policy rejection is final for this attempt; every failure is surfaced to the user,
- * and the caller blocks further attempts until a genuinely new challenge/attempt context begins.
+ * backoff. A policy rejection is final for this attempt; every failure is surfaced with its
+ * retryability so the caller can wait for a new attempt identity instead of re-entering the
+ * store lock on unrelated recompositions.
  */
 internal object RecoveryCommitAttempt {
     const val MAX_TRANSIENT_RETRIES = 2
     const val RETRY_DELAY_MS = 5_000L
 
     suspend fun run(
-        commit: suspend () -> RecoveryCommitResult,
-        onFailure: (String) -> Unit,
+        commit: suspend () -> RecoveryCommitOutcome,
+        onFailure: (message: String, retryable: Boolean) -> Unit,
         onSuccess: () -> Unit,
     ): Boolean {
         var retries = 0
         while (true) {
             currentCoroutineContext().ensureActive()
-            when (commit()) {
-                RecoveryCommitResult.SUCCESS -> {
+            when (val outcome = commit()) {
+                RecoveryCommitOutcome.Success -> {
                     onSuccess()
                     return true
                 }
-                RecoveryCommitResult.REJECTED -> {
-                    onFailure(StreakRecoveryCopy.CONFIRM_FAILED)
+                is RecoveryCommitOutcome.Rejected -> {
+                    onFailure(StreakRecoveryCopy.CONFIRM_FAILED, outcome.retryable)
                     return false
                 }
-                RecoveryCommitResult.PERSIST_FAILED -> {
-                    onFailure(StreakRecoveryCopy.PERSIST_FAILED)
+                RecoveryCommitOutcome.PersistFailed -> {
+                    onFailure(StreakRecoveryCopy.PERSIST_FAILED, true)
                     if (retries >= MAX_TRANSIENT_RETRIES) return false
                     retries++
                     delay(RETRY_DELAY_MS * retries)

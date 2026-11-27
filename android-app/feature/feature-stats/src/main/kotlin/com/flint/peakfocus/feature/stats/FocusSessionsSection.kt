@@ -297,54 +297,38 @@ private fun StreakRecoveryCard(summary: FocusSummary?) {
         enforcementReady = enforcementReady,
     )
     val uiOffer = ui as? StreakRecoveryUi.Offer
-    var committing by remember { mutableStateOf(false) }
-    var celebration by remember { mutableStateOf(false) }
-    // A refusal must be visible: the card otherwise sits on "confirming" forever.
-    var recoveryFailure by remember { mutableStateOf<String?>(null) }
-    // Bumped only when a genuinely new attempt context begins (a new challenge day, a fresh
-    // freeze, or recovered enforcement). It restarts the commit effect after a failure without
-    // letting the failure itself re-enter the store lock.
-    var retryNonce by remember { mutableStateOf(0) }
-    androidx.compose.runtime.LaunchedEffect(
-        offer?.challenge?.recoveryDay, offer?.challenge?.requiredFocusedMs,
-        protection?.challengeId, enforcementIntact,
-    ) {
-        if (recoveryFailure != null) {
-            recoveryFailure = null
-            retryNonce++
-        }
+    val recoveryState = remember { RecoveryCommitState() }
+    val boundProtection = protection
+    val recoveryAttempt = if (offer != null && uiOffer != null && boundProtection != null) {
+        RecoveryAttempt(
+            recoveryDay = offer.challenge.recoveryDay,
+            requiredFocusedMs = offer.challenge.requiredFocusedMs,
+            challengeId = boundProtection.challengeId,
+            enforcementIntact = enforcementIntact,
+            progressMinutes = uiOffer.progressMinutes,
+            satisfied = uiOffer.satisfied,
+        )
+    } else {
+        null
     }
-    androidx.compose.runtime.LaunchedEffect(
-        offer?.challenge?.recoveryDay, uiOffer?.satisfied, retryNonce, celebration,
-    ) {
-        val commitOffer = uiOffer ?: return@LaunchedEffect
-        if (!commitOffer.satisfied || committing || celebration || recoveryFailure != null) {
-            return@LaunchedEffect
-        }
-        committing = true
-        // The bridge re-checks the live service probe, the durable latch and live protection.
-        try {
-            RecoveryCommitAttempt.run(
-                commit = {
-                    when (FocusHistoryBridge.tryCommitStreakRecovery(context, zone = zone)) {
-                        is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Success ->
-                            RecoveryCommitResult.SUCCESS
-                        is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Rejected ->
-                            RecoveryCommitResult.REJECTED
-                        com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.PersistFailed ->
-                            RecoveryCommitResult.PERSIST_FAILED
-                    }
-                },
-                onFailure = { recoveryFailure = it },
-                onSuccess = {
-                    recoveryFailure = null
-                    celebration = true
-                },
-            )
-        } finally {
-            committing = false
-        }
-    }
+    RecoveryCommitEffect(
+        attempt = recoveryAttempt,
+        state = recoveryState,
+        commit = {
+            when (val result = FocusHistoryBridge.tryCommitStreakRecovery(context, zone = zone)) {
+                is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Success ->
+                    RecoveryCommitOutcome.Success
+                is com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.Rejected ->
+                    RecoveryCommitOutcome.Rejected(
+                        retryable = recoveryRejectionRetryable(result.reason),
+                    )
+                com.flint.peakfocus.core.history.StreakRecoveryCommitter.Result.PersistFailed ->
+                    RecoveryCommitOutcome.PersistFailed
+            }
+        },
+    )
+    val showCelebration = recoveryState.celebration &&
+        (recoveryAttempt == null || recoveryState.celebrationKey == recoveryAttempt.challengeKey)
     when (ui) {
         StreakRecoveryUi.Hidden -> Unit
         is StreakRecoveryUi.Unavailable -> FlintCard(modifier = Modifier.testTag("history.streak.recovery")) {
@@ -383,7 +367,7 @@ private fun StreakRecoveryCard(summary: FocusSummary?) {
                 )
             }
             Text(
-                recoveryFailure ?: ui.statusLine,
+                recoveryState.failure?.message ?: ui.statusLine,
                 style = MaterialTheme.typography.labelLarge,
                 color = FlintPalette.Ember,
                 modifier = Modifier.padding(top = FlintSpacing.sm),
@@ -408,7 +392,7 @@ private fun StreakRecoveryCard(summary: FocusSummary?) {
             )
         }
     }
-    if (celebration) {
+    if (showCelebration) {
         Text(
             StreakRecoveryCopy.SUCCESS,
             style = MaterialTheme.typography.bodyMedium,
